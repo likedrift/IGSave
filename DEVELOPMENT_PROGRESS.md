@@ -60,6 +60,36 @@ Build a personal-use iOS app that accepts a pasted Instagram link and saves the 
   - Use fallback images only when structured parsing found no images.
   - Use fallback videos only when structured parsing found no videos.
 
+### 2026-05-04 - Story Avatar Guard
+
+- Diagnosed story links saving the user's avatar because story pages can expose profile/avatar images through Open Graph metadata.
+- Added Instagram link target detection:
+  - `/p/...`, `/reel/...`, and `/tv/...` use shortcode parsing.
+  - `/stories/{username}/{storyID}` uses story ID parsing.
+- Disabled Open Graph fallback for story links so avatars are never treated as story media.
+- Added story media parsing for:
+  - `image_versions2.candidates`
+  - `video_versions`
+  - `video_url`
+- Scoped regex fallback to scripts containing the exact story ID; if real story media is unavailable, the app now fails instead of saving the avatar.
+
+### 2026-05-04 - UI Refresh And Recent Saves
+
+- Recorded story authenticated access as a TODO instead of continuing story work immediately.
+- Generated and applied an original 1024px iOS app icon:
+  - `AppIcon.png`
+  - `AppIcon-Dark.png`
+  - `AppIcon-Tinted.png`
+- Rebuilt the main screen around an iOS 26 Liquid Glass style:
+  - Branded header.
+  - Glass input panel.
+  - Compact current-task status.
+  - Dedicated recent saves area.
+- Added persistent recent-save history:
+  - Stores the latest 5 successful saves.
+  - Tracks username/source, saved time, saved file count, content kind, source URL, and preview thumbnail.
+  - Generates local 240px thumbnails from the first saved image, or video frame when needed.
+
 ## Current Status
 
 - Implemented MVP app flow:
@@ -84,6 +114,7 @@ Build a personal-use iOS app that accepts a pasted Instagram link and saves the 
   - A direct MP4/MOV URL.
   - A public Instagram post/reel URL that exposes `og:image` or `og:video`.
 - Decide story strategy:
+  - TODO: add a compliant authenticated story access flow if needed.
   - Manual media URL input.
   - Share extension.
   - Optional authenticated local-only cookie/session flow, if acceptable and compliant.

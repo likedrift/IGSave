@@ -25,6 +25,21 @@ enum MediaKind: String, Hashable, Sendable {
     }
 }
 
+enum InstagramContentKind: String, Codable, Hashable, Sendable {
+    case direct
+    case post
+    case reel
+    case story
+    case unknown
+}
+
+struct MediaResolution: Sendable {
+    let assets: [MediaAsset]
+    let username: String?
+    let contentKind: InstagramContentKind
+    let sourceURL: URL
+}
+
 struct MediaAsset: Identifiable, Hashable, Sendable {
     let id = UUID()
     let sourceURL: URL
@@ -36,4 +51,32 @@ struct MediaCandidate: Hashable, Sendable {
     let sourceURL: URL
     let kind: MediaKind
     let priority: Int
+}
+
+struct RecentSave: Identifiable, Codable, Equatable, Sendable {
+    let id: UUID
+    let username: String
+    let savedAt: Date
+    let itemCount: Int
+    let contentKind: InstagramContentKind
+    let sourceURL: String
+    let previewFilename: String?
+
+    init(
+        id: UUID = UUID(),
+        username: String,
+        savedAt: Date = Date(),
+        itemCount: Int,
+        contentKind: InstagramContentKind,
+        sourceURL: String,
+        previewFilename: String?
+    ) {
+        self.id = id
+        self.username = username
+        self.savedAt = savedAt
+        self.itemCount = itemCount
+        self.contentKind = contentKind
+        self.sourceURL = sourceURL
+        self.previewFilename = previewFilename
+    }
 }

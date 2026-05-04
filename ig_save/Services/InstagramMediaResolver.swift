@@ -26,32 +26,91 @@ enum MediaResolverError: LocalizedError, Sendable {
 }
 
 actor InstagramMediaResolver {
-    func resolve(_ rawInput: String) async throws -> [MediaAsset] {
+    private enum InstagramTarget: Sendable {
+        case post(shortcode: String, kind: InstagramContentKind)
+        case story(username: String, id: String)
+        case unknown
+
+        var scopedToken: String? {
+            switch self {
+            case let .post(shortcode, _):
+                shortcode
+            case let .story(_, id):
+                id
+            case .unknown:
+                nil
+            }
+        }
+
+        var allowsOpenGraphFallback: Bool {
+            switch self {
+            case .post, .unknown:
+                true
+            case .story:
+                false
+            }
+        }
+
+        var contentKind: InstagramContentKind {
+            switch self {
+            case let .post(_, kind):
+                kind
+            case .story:
+                .story
+            case .unknown:
+                .unknown
+            }
+        }
+
+        var usernameFromPath: String? {
+            switch self {
+            case let .story(username, _):
+                username
+            case .post, .unknown:
+                nil
+            }
+        }
+    }
+
+    func resolve(_ rawInput: String) async throws -> MediaResolution {
         guard let url = firstURL(in: rawInput) else {
             throw MediaResolverError.noURL
         }
 
         let directKind = MediaKind.infer(from: url)
         if directKind != .unknown {
-            return [MediaAsset(
+            let asset = MediaAsset(
                 sourceURL: url,
                 kind: directKind,
                 suggestedFilename: suggestedFilename(for: url, kind: directKind, index: 1)
-            )]
+            )
+
+            return MediaResolution(
+                assets: [asset],
+                username: nil,
+                contentKind: .direct,
+                sourceURL: url
+            )
         }
 
         guard isInstagramURL(url) else {
             throw MediaResolverError.unsupportedHost
         }
 
+        let target = instagramTarget(from: url)
         let html = try await fetchHTML(from: url)
-        let assets = extractMediaAssets(from: html, shortcode: instagramShortcode(from: url))
+        let assets = extractMediaAssets(from: html, target: target)
 
         guard !assets.isEmpty else {
             throw MediaResolverError.noMediaFound
         }
 
-        return assets
+        return MediaResolution(
+            assets: assets,
+            username: username(from: html, target: target),
+            contentKind: target.contentKind,
+            sourceURL: url
+        )
     }
 
     private func firstURL(in text: String) -> URL? {
@@ -72,7 +131,7 @@ actor InstagramMediaResolver {
         return host == "instagram.com" || host == "www.instagram.com" || host.hasSuffix(".instagram.com")
     }
 
-    private func instagramShortcode(from url: URL) -> String? {
+    private func instagramTarget(from url: URL) -> InstagramTarget {
         let components = url.pathComponents.filter { $0 != "/" }
 
         for prefix in ["p", "reel", "tv"] {
@@ -83,10 +142,19 @@ actor InstagramMediaResolver {
                 continue
             }
 
-            return components[index + 1]
+            let kind: InstagramContentKind = prefix == "reel" ? .reel : .post
+
+            return .post(shortcode: components[index + 1], kind: kind)
         }
 
-        return nil
+        if
+            let index = components.firstIndex(of: "stories"),
+            components.indices.contains(index + 2)
+        {
+            return .story(username: components[index + 1], id: components[index + 2])
+        }
+
+        return .unknown
     }
 
     private func fetchHTML(from url: URL) async throws -> String {
@@ -108,10 +176,10 @@ actor InstagramMediaResolver {
         return html
     }
 
-    private func extractMediaAssets(from html: String, shortcode: String?) -> [MediaAsset] {
+    private func extractMediaAssets(from html: String, target: InstagramTarget) -> [MediaAsset] {
         var resolved: [MediaCandidate] = []
-        let structuredAssets = extractStructuredJSONAssets(from: html, shortcode: shortcode)
-        let embeddedAssets = extractEmbeddedJSONAssets(from: html, shortcode: shortcode)
+        let structuredAssets = extractStructuredJSONAssets(from: html, target: target)
+        let embeddedAssets = extractEmbeddedJSONAssets(from: html, target: target)
 
         resolved.append(contentsOf: structuredAssets)
 
@@ -123,7 +191,7 @@ actor InstagramMediaResolver {
             resolved.append(contentsOf: embeddedAssets.filter { $0.kind == .video })
         }
 
-        if resolved.isEmpty {
+        if resolved.isEmpty && target.allowsOpenGraphFallback {
             resolved.append(contentsOf: extractOpenGraphAssets(from: html))
         }
 
@@ -168,14 +236,15 @@ actor InstagramMediaResolver {
         }
     }
 
-    private func extractEmbeddedJSONAssets(from html: String, shortcode: String?) -> [MediaCandidate] {
-        let source = regexSource(from: html, shortcode: shortcode)
+    private func extractEmbeddedJSONAssets(from html: String, target: InstagramTarget) -> [MediaCandidate] {
+        let source = regexSource(from: html, target: target)
         let imagePatterns = [
             #""image_versions2"\s*:\s*\{\s*"candidates"\s*:\s*\[\s*\{[^{}]*"url"\s*:\s*"([^"]+)""#,
             #""display_url"\s*:\s*"([^"]+)""#
         ]
         let videoPatterns = [
-            #""video_url"\s*:\s*"([^"]+)""#
+            #""video_url"\s*:\s*"([^"]+)""#,
+            #""video_versions"\s*:\s*\[\s*\{[^{}]*"url"\s*:\s*"([^"]+)""#
         ]
 
         let images = imagePatterns.flatMap { pattern in
@@ -201,8 +270,8 @@ actor InstagramMediaResolver {
         return images + videos
     }
 
-    private func regexSource(from html: String, shortcode: String?) -> String {
-        guard let shortcode else {
+    private func regexSource(from html: String, target: InstagramTarget) -> String {
+        guard let token = target.scopedToken else {
             return html
         }
 
@@ -211,22 +280,51 @@ actor InstagramMediaResolver {
             in: html,
             options: [.caseInsensitive, .dotMatchesLineSeparators]
         )
-        let matchingScripts = scriptBodies.filter { $0.contains(shortcode) }
+        let matchingScripts = scriptBodies.filter { $0.contains(token) }
 
         if matchingScripts.isEmpty {
-            return html
+            return target.allowsOpenGraphFallback ? html : ""
         }
 
         return matchingScripts.joined(separator: "\n")
     }
 
-    private func extractStructuredJSONAssets(from html: String, shortcode: String?) -> [MediaCandidate] {
+    private func extractStructuredJSONAssets(from html: String, target: InstagramTarget) -> [MediaCandidate] {
+        let jsonObjects = applicationJSONObjects(from: html)
+
+        guard !jsonObjects.isEmpty else {
+            return []
+        }
+
+        switch target {
+        case let .post(shortcode, _):
+            let matchingNodes = jsonObjects.flatMap { findMediaNodes(matchingShortcode: shortcode, in: $0) }
+            let candidates = matchingNodes.flatMap { collectMediaCandidates(from: $0) }
+
+            if !candidates.isEmpty {
+                return candidates
+            }
+        case let .story(_, id):
+            let matchingNodes = jsonObjects.flatMap { findMediaNodes(matchingStoryID: id, in: $0) }
+            let candidates = matchingNodes.flatMap { collectMediaCandidates(from: $0) }
+
+            if !candidates.isEmpty {
+                return candidates
+            }
+        case .unknown:
+            return []
+        }
+
+        return []
+    }
+
+    private func applicationJSONObjects(from html: String) -> [Any] {
         let scriptBodies = captureGroupMatches(
             pattern: #"<script\b[^>]*type=["']application/json["'][^>]*>(.*?)</script>"#,
             in: html,
             options: [.caseInsensitive, .dotMatchesLineSeparators]
         )
-        let jsonObjects = scriptBodies.compactMap { body -> Any? in
+        return scriptBodies.compactMap { body -> Any? in
             let decodedBody = decodeHTMLEntities(body)
 
             guard let data = decodedBody.data(using: .utf8) else {
@@ -235,27 +333,89 @@ actor InstagramMediaResolver {
 
             return try? JSONSerialization.jsonObject(with: data)
         }
+    }
 
-        guard !jsonObjects.isEmpty else {
-            return []
+    private func username(from html: String, target: InstagramTarget) -> String? {
+        if let username = target.usernameFromPath {
+            return username
         }
 
-        if let shortcode {
-            let matchingNodes = jsonObjects.flatMap { findMediaNodes(matchingShortcode: shortcode, in: $0) }
-            let candidates = matchingNodes.flatMap { collectMediaCandidates(from: $0) }
+        guard case let .post(shortcode, _) = target else {
+            return nil
+        }
 
-            if !candidates.isEmpty {
-                return candidates
+        let jsonObjects = applicationJSONObjects(from: html)
+        let matchingNodes = jsonObjects.flatMap { findMediaNodes(matchingShortcode: shortcode, in: $0) }
+
+        for node in matchingNodes {
+            if let username = username(fromMediaNode: node) {
+                return username
             }
         }
 
-        return []
+        return captureGroupMatches(pattern: #""username"\s*:\s*"([^"]+)""#, in: regexSource(from: html, target: target))
+            .map(decodeJSONStringFragment)
+            .first
+    }
+
+    private func username(fromMediaNode dictionary: [String: Any]) -> String? {
+        if
+            let owner = dictionary["owner"] as? [String: Any],
+            let username = stringValue(owner["username"])
+        {
+            return username
+        }
+
+        if
+            let user = dictionary["user"] as? [String: Any],
+            let username = stringValue(user["username"])
+        {
+            return username
+        }
+
+        if let username = stringValue(dictionary["username"]) {
+            return username
+        }
+
+        var foundUsername: String?
+        walkJSON(dictionary) { child in
+            guard foundUsername == nil else {
+                return
+            }
+
+            if
+                (child["profile_pic_url"] != nil || child["full_name"] != nil),
+                let username = stringValue(child["username"])
+            {
+                foundUsername = username
+            }
+        }
+
+        return foundUsername
     }
 
     private func findMediaNodes(matchingShortcode shortcode: String, in value: Any) -> [[String: Any]] {
         var matches: [[String: Any]] = []
         walkJSON(value) { dictionary in
             if stringValue(dictionary["shortcode"]) == shortcode || stringValue(dictionary["code"]) == shortcode {
+                matches.append(dictionary)
+            }
+        }
+
+        return matches
+    }
+
+    private func findMediaNodes(matchingStoryID storyID: String, in value: Any) -> [[String: Any]] {
+        var matches: [[String: Any]] = []
+        walkJSON(value) { dictionary in
+            let ids = [
+                stringValue(dictionary["id"]),
+                stringValue(dictionary["pk"]),
+                stringValue(dictionary["media_id"]),
+                stringValue(dictionary["organic_tracking_token"])
+            ]
+
+            if ids.contains(where: { $0 == storyID || $0?.hasPrefix("\(storyID)_") == true }) {
                 matches.append(dictionary)
             }
         }
@@ -278,10 +438,17 @@ actor InstagramMediaResolver {
             return []
         }
 
-        let isVideo = boolValue(dictionary["is_video"]) == true || dictionary["video_url"] != nil
+        let isVideo = boolValue(dictionary["is_video"]) == true ||
+            intValue(dictionary["media_type"]) == 2 ||
+            dictionary["video_url"] != nil ||
+            dictionary["video_versions"] != nil
         var candidates: [MediaCandidate] = []
 
         if let videoURL = urlValue(dictionary["video_url"]) {
+            candidates.append(MediaCandidate(sourceURL: videoURL, kind: .video, priority: 50))
+        }
+
+        if let videoURL = bestVideoURL(fromVideoVersions: dictionary["video_versions"]) {
             candidates.append(MediaCandidate(sourceURL: videoURL, kind: .video, priority: 50))
         }
 
@@ -307,6 +474,26 @@ actor InstagramMediaResolver {
             let imageVersions = value as? [String: Any],
             let candidates = imageVersions["candidates"] as? [[String: Any]]
         else {
+            return nil
+        }
+
+        return candidates
+            .compactMap { candidate -> (url: URL, area: Int)? in
+                guard let url = urlValue(candidate["url"]) else {
+                    return nil
+                }
+
+                let width = intValue(candidate["width"]) ?? 0
+                let height = intValue(candidate["height"]) ?? 0
+
+                return (url, width * height)
+            }
+            .max { lhs, rhs in lhs.area < rhs.area }?
+            .url
+    }
+
+    private func bestVideoURL(fromVideoVersions value: Any?) -> URL? {
+        guard let candidates = value as? [[String: Any]] else {
             return nil
         }
 
@@ -461,7 +648,15 @@ actor InstagramMediaResolver {
     }
 
     private func stringValue(_ value: Any?) -> String? {
-        value as? String
+        if let string = value as? String {
+            return string
+        }
+
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+
+        return nil
     }
 
     private func boolValue(_ value: Any?) -> Bool? {
