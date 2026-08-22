@@ -10,6 +10,7 @@ enum MediaResolverError: LocalizedError, Sendable {
     case unsupportedHost
     case invalidResponse
     case noMediaFound
+    case storyLoginRequired
 
     var errorDescription: String? {
         switch self {
@@ -21,6 +22,8 @@ enum MediaResolverError: LocalizedError, Sendable {
             "页面响应无效。"
         case .noMediaFound:
             "没有在页面里找到可直接保存的公开媒体。公开帖子通常可用，快拍或私密内容需要后续单独设计。"
+        case .storyLoginRequired:
+            "快拍需要先在 App 内登录 Instagram。登录后会使用你自己的本地会话解析可访问的快拍媒体。"
         }
     }
 }
@@ -162,6 +165,11 @@ actor InstagramMediaResolver {
         request.timeoutInterval = 25
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
         request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        request.setValue("https://www.instagram.com/", forHTTPHeaderField: "Referer")
+
+        if let cookieHeader = await InstagramSessionStore.cookieHeader(for: url) {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
 
         let (data, response) = try await URLSession.shared.data(for: request)
 

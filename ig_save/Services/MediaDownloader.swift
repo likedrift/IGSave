@@ -21,6 +21,11 @@ struct MediaDownloader: Sendable {
         var request = URLRequest(url: asset.sourceURL)
         request.timeoutInterval = 60
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("https://www.instagram.com/", forHTTPHeaderField: "Referer")
+
+        if let cookieHeader = await InstagramSessionStore.cookieHeader(for: asset.sourceURL) {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
 
         let (temporaryURL, response) = try await URLSession.shared.download(for: request)
 

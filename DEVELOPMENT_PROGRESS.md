@@ -90,6 +90,40 @@ Build a personal-use iOS app that accepts a pasted Instagram link and saves the 
   - Tracks username/source, saved time, saved file count, content kind, source URL, and preview thumbnail.
   - Generates local 240px thumbnails from the first saved image, or video frame when needed.
 
+### 2026-05-16 - Instagram Story Support TODO
+
+- Example unsupported story link recorded:
+  - `https://www.instagram.com/stories/zutomayo/3897615737682708220?utm_source=ig_story_item_share&igsh=MTZqZTN3cmI1YXVjdg==`
+- Current status:
+  - Public post/reel links are supported when the page exposes resolvable media metadata.
+  - Story links are not reliably supported because real story media usually depends on Instagram login state and authorized requests.
+- Observed behavior:
+  - Public story HTML may expose only profile/avatar imagery, a shell page, or preview metadata.
+  - The app already disables Open Graph fallback for story links so avatars are not saved as story media.
+- TODO:
+  - Design a compliant story support flow, such as a local WebView login session, Share Extension capture path, or manual media direct-link mode.
+  - Do not bypass login, private account restrictions, or other access controls.
+
+### 2026-05-16 - Authenticated Story Prototype
+
+- Added a local Instagram login entry point using an in-app `WKWebView`.
+- Story links now require an active Instagram `sessionid` cookie in the app's default WebKit data store.
+- When saving `/stories/{username}/{storyID}` links, the app:
+  - Loads the story URL in a local `WKWebView` with the user's own Instagram session.
+  - Extracts real media candidates from visible `video`/`img` elements and loaded CDN resources.
+  - Filters out profile/avatar resources and keeps Open Graph fallback disabled for stories.
+- Downloads include Instagram referer and available matching cookies.
+- This remains a personal-use authenticated flow; it does not bypass login, private account restrictions, or other access controls.
+
+### 2026-06-22 - iOS 27 Debug DYLIB Fix
+
+- Disabled `ENABLE_DEBUG_DYLIB` (`= NO`) in both Project-level and Target-level Debug build configurations.
+- Disabled `ENABLE_PREVIEWS` (`= NO`) in Target Debug (non-functional without debug dylib).
+- Disabled `SWIFT_APPROACHABLE_CONCURRENCY` (`= NO`) in Target Debug — suspected dyld crash cause due to Swift 6 runtime mismatch between Xcode 26.4 SDK and iOS 27 beta device.
+- Fixes dyld-stage crash (`lsl::MemoryManager::lockGuard()` / refcount decrement) on iOS 27 real devices.
+- Side effect: SwiftUI Preview is no longer available in this Debug configuration (accepted tradeoff for reliable device debugging).
+- The Release configuration is unchanged.
+
 ## Current Status
 
 - Implemented MVP app flow:
@@ -98,6 +132,7 @@ Build a personal-use iOS app that accepts a pasted Instagram link and saves the 
   - Download resolved assets to app cache.
   - Save images/videos into Photos with add-only permission.
   - Show per-link history and failure messages.
+- Instagram Story links require an in-app Instagram login session and are saved only when real story media is visible in that session.
 - Added Photos add-only usage description to generated Info.plist settings.
 - Verified:
   - `ig_save.xcodeproj/project.pbxproj` passes `plutil -lint`.
@@ -113,8 +148,8 @@ Build a personal-use iOS app that accepts a pasted Instagram link and saves the 
   - A direct JPG/PNG URL.
   - A direct MP4/MOV URL.
   - A public Instagram post/reel URL that exposes `og:image` or `og:video`.
+- Test the local-only authenticated story access flow on a real iPhone session; do not bypass login/private access controls.
 - Decide story strategy:
-  - TODO: add a compliant authenticated story access flow if needed.
   - Manual media URL input.
   - Share extension.
   - Optional authenticated local-only cookie/session flow, if acceptable and compliant.

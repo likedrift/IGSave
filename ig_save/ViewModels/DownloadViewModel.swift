@@ -16,14 +16,45 @@ final class DownloadViewModel: ObservableObject {
     @Published private(set) var jobs: [SaveJob] = []
     @Published private(set) var isWorking = false
     @Published private(set) var recentSaves: [RecentSave] = RecentSaveStore.load()
+    @Published private(set) var hasInstagramSession = false
+    @Published var isShowingInstagramLogin = false
+    @Published var profileUsername = ""
+    @Published private(set) var profilePosts: [InstagramProfilePost] = []
+    @Published var selectedProfilePostIDs: Set<String> = []
+    @Published private(set) var isLoadingProfile = false
+    @Published private(set) var profileError: String?
 
     private let resolver = InstagramMediaResolver()
+    private let webStoryResolver = InstagramWebStoryResolver()
+    private let profileFeedResolver = InstagramProfileFeedResolver()
     private let downloader = MediaDownloader()
     private let saver = PhotoLibrarySaver()
     private let thumbnailGenerator = ThumbnailGenerator()
 
     var canStart: Bool {
         !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isWorking
+    }
+
+    var canFetchProfile: Bool {
+        !profileUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !isLoadingProfile &&
+            !isWorking
+    }
+
+    var canSaveSelectedProfilePosts: Bool {
+        !selectedProfilePostIDs.isEmpty && !isWorking && !isLoadingProfile
+    }
+
+    var profileRegularPosts: [InstagramProfilePost] {
+        profilePosts.filter { $0.contentKind == .post }
+    }
+
+    var profileReels: [InstagramProfilePost] {
+        profilePosts.filter { $0.contentKind == .reel }
+    }
+
+    var profileStories: [InstagramProfilePost] {
+        profilePosts.filter { $0.contentKind == .story }
     }
 
     func pasteFromClipboard() {
@@ -46,15 +77,114 @@ final class DownloadViewModel: ObservableObject {
 
         Task {
             await run(input: input)
+            isWorking = false
         }
     }
 
-    private func run(input: String) async {
-        var job = SaveJob(input: input, status: .resolving)
+    func fetchLatestProfilePosts() {
+        let username = profileUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !username.isEmpty, !isLoadingProfile, !isWorking else {
+            return
+        }
+
+        isLoadingProfile = true
+        profileError = nil
+        profilePosts = []
+        selectedProfilePostIDs = []
+
+        Task {
+            do {
+                profilePosts = try await profileFeedResolver.latestPosts(for: username, limitPerKind: 5)
+            } catch {
+                profileError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+
+            isLoadingProfile = false
+        }
+    }
+
+    func toggleProfilePost(_ post: InstagramProfilePost) {
+        if selectedProfilePostIDs.contains(post.id) {
+            selectedProfilePostIDs.remove(post.id)
+        } else {
+            selectedProfilePostIDs.insert(post.id)
+        }
+    }
+
+    func toggleAllProfilePosts(in posts: [InstagramProfilePost]) {
+        let postIDs = Set(posts.map(\.id))
+
+        guard !postIDs.isEmpty else {
+            return
+        }
+
+        if postIDs.isSubset(of: selectedProfilePostIDs) {
+            selectedProfilePostIDs.subtract(postIDs)
+        } else {
+            selectedProfilePostIDs.formUnion(postIDs)
+        }
+    }
+
+    func saveSelectedProfilePosts() {
+        let selectedPosts = profilePosts
+            .filter { selectedProfilePostIDs.contains($0.id) }
+
+        guard !selectedPosts.isEmpty, !isWorking else {
+            return
+        }
+
+        isWorking = true
+
+        Task {
+            for post in selectedPosts {
+                if post.contentKind == .story,
+                   let directMediaURL = post.directMediaURL,
+                   let mediaKind = post.mediaKind {
+                    await run(
+                        input: post.url.absoluteString,
+                        preResolved: storyResolution(
+                            for: post,
+                            mediaURL: directMediaURL,
+                            mediaKind: mediaKind
+                        )
+                    )
+                } else {
+                    await run(input: post.url.absoluteString)
+                }
+            }
+
+            isWorking = false
+        }
+    }
+
+    func showInstagramLogin() {
+        isShowingInstagramLogin = true
+    }
+
+    func finishInstagramLogin() {
+        isShowingInstagramLogin = false
+
+        Task {
+            await refreshInstagramSessionStatus()
+        }
+    }
+
+    func refreshInstagramSessionStatus() async {
+        hasInstagramSession = await InstagramSessionStore.hasActiveSession()
+    }
+
+    private func run(input: String, preResolved: MediaResolution? = nil) async {
+        let job = SaveJob(input: input, status: .resolving)
         jobs.insert(job, at: 0)
 
         do {
-            let resolution = try await resolver.resolve(input)
+            let resolution: MediaResolution
+            if let preResolved {
+                resolution = preResolved
+            } else {
+                resolution = try await resolveMedia(input)
+            }
             let assets = resolution.assets
             var savedCount = 0
             var downloadedMedia: [DownloadedMedia] = []
@@ -78,8 +208,63 @@ final class DownloadViewModel: ObservableObject {
             update(job.id, status: .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription))
         }
 
-        isWorking = false
-        job.status = jobs.first(where: { $0.id == job.id })?.status ?? job.status
+    }
+
+    private func storyResolution(
+        for post: InstagramProfilePost,
+        mediaURL: URL,
+        mediaKind: MediaKind
+    ) -> MediaResolution {
+        let fileExtension: String
+        switch mediaKind {
+        case .image:
+            fileExtension = "jpg"
+        case .video:
+            fileExtension = "mp4"
+        case .unknown:
+            fileExtension = mediaURL.pathExtension.isEmpty ? "dat" : mediaURL.pathExtension
+        }
+
+        let username = storyUsername(from: post.url)
+        let asset = MediaAsset(
+            sourceURL: mediaURL,
+            kind: mediaKind,
+            suggestedFilename: "ig-story-\(post.id.replacingOccurrences(of: "story-", with: "")).\(fileExtension)"
+        )
+
+        return MediaResolution(
+            assets: [asset],
+            username: username,
+            contentKind: .story,
+            sourceURL: post.url
+        )
+    }
+
+    private func storyUsername(from url: URL) -> String? {
+        let components = url.pathComponents.filter { $0 != "/" }
+
+        guard
+            let storyIndex = components.firstIndex(of: "stories"),
+            components.indices.contains(storyIndex + 1)
+        else {
+            return nil
+        }
+
+        return components[storyIndex + 1]
+    }
+
+    private func resolveMedia(_ input: String) async throws -> MediaResolution {
+        guard isStoryInput(input) else {
+            return try await resolver.resolve(input)
+        }
+
+        await refreshInstagramSessionStatus()
+
+        guard hasInstagramSession else {
+            throw MediaResolverError.storyLoginRequired
+        }
+
+        return try await webStoryResolver.resolve(input)
     }
 
     private func update(_ id: UUID, status: SaveStatus) {
@@ -132,6 +317,14 @@ final class DownloadViewModel: ObservableObject {
         }
 
         return host
+    }
+
+    private func isStoryInput(_ input: String) -> Bool {
+        guard let url = URL(string: input) else {
+            return input.contains("/stories/")
+        }
+
+        return url.pathComponents.contains("stories")
     }
 }
 
