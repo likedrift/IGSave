@@ -162,6 +162,17 @@ Build a personal-use iOS app that accepts a pasted Instagram link and saves the 
 - Added validated Instagram session state, expired-session messaging, explicit logout/cookie cleanup, and a system settings shortcut for permission recovery.
 - Unified Debug and Release deployment targets at iOS 26.0.
 
+### 2026-08-25 - Phase 3: Favorites, Shortcuts, And Preferences
+
+- Added persistent favorite profiles with one-tap refresh and per-profile post ID snapshots.
+- Refreshing a favorite now reports how many non-story items are new since the previous refresh.
+- Added an App Intent and system Shortcuts phrases for sending an Instagram link into the persistent save queue.
+- Added pending-import delivery so App Intent requests are consumed while the app is open or on launch.
+- Added save-flow preferences for optional preview, duplicate protection, dedicated album organization, and cellular downloads.
+- Updated media downloads to honor the cellular-data preference.
+- Migrated video thumbnail generation to the current asynchronous AVFoundation APIs.
+- Verified App Intents metadata extraction and clean Debug/Release device SDK builds.
+
 ## Next Tasks
 
 - Validate full build in Xcode.

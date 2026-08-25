@@ -5,6 +5,7 @@
 //  Created by yank on 2026/5/4.
 //
 
+import Combine
 import SwiftUI
 import UIKit
 
@@ -36,6 +37,10 @@ struct ContentView: View {
                 selectedTab = .save
                 inputMode = .link
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .igSavePendingImport)) { _ in
+            viewModel.consumePendingImports()
+            selectedTab = .save
         }
         .task {
             await viewModel.refreshInstagramSessionStatus()
@@ -362,7 +367,7 @@ struct ContentView: View {
                             } else {
                                 Image(systemName: "photo.on.rectangle.angled")
                             }
-                            Text(viewModel.isPreparingPreview ? "正在解析" : "预览并选择")
+                            Text(viewModel.isPreparingPreview ? "正在解析" : "解析并保存")
                         }
                         .font(.headline)
                         .frame(maxWidth: .infinity)
@@ -402,10 +407,53 @@ struct ContentView: View {
                     .onSubmit {
                         viewModel.fetchLatestProfilePosts()
                     }
+
+                Button {
+                    viewModel.toggleCurrentProfileFavorite()
+                } label: {
+                    Image(systemName: viewModel.isCurrentProfileFavorite ? "star.fill" : "star")
+                        .foregroundStyle(viewModel.isCurrentProfileFavorite ? .yellow : Brand.accent)
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.profileUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel(viewModel.isCurrentProfileFavorite ? "取消收藏账号" : "收藏账号")
             }
             .padding(.horizontal, 16)
             .frame(height: 56)
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            if !viewModel.favoriteProfiles.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 9) {
+                        ForEach(viewModel.favoriteProfiles) { favorite in
+                            Button {
+                                isInputFocused = false
+                                viewModel.selectFavoriteProfile(favorite)
+                            } label: {
+                                Label("@\(favorite.username)", systemImage: "star.fill")
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 9)
+                                    .background(Brand.accent.opacity(0.09), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button("移除收藏", systemImage: "star.slash", role: .destructive) {
+                                    viewModel.removeFavoriteProfile(favorite)
+                                }
+                            }
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
+
+            if viewModel.lastProfileNewContentCount > 0 {
+                Label("相比上次新增 \(viewModel.lastProfileNewContentCount) 项内容", systemImage: "sparkles")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Brand.accent)
+            }
 
             if let profileError = viewModel.profileError {
                 Label(profileError, systemImage: "exclamationmark.circle.fill")
@@ -759,15 +807,32 @@ private struct SettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
     @AppStorage(AppPreferences.dedicatedAlbumKey) private var usesDedicatedAlbum = false
+    @AppStorage(AppPreferences.previewBeforeSavingKey) private var previewsBeforeSaving = true
+    @AppStorage(AppPreferences.duplicateProtectionKey) private var protectsAgainstDuplicates = true
+    @AppStorage(AppPreferences.cellularDownloadsKey) private var allowsCellularDownloads = true
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("保存流程") {
+                    Toggle("保存链接前先预览", isOn: $previewsBeforeSaving)
+                    Toggle("提醒重复保存", isOn: $protectsAgainstDuplicates)
+                }
+
                 Section("保存位置") {
                     Toggle("整理到“IG Save”相册", isOn: $usesDedicatedAlbum)
                     Text(usesDedicatedAlbum ? "新保存的内容会同时加入 IG Save 系统相册。" : "内容直接添加到系统照片图库。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("网络") {
+                    Toggle("允许蜂窝网络下载", isOn: $allowsCellularDownloads)
+                    if !allowsCellularDownloads {
+                        Text("使用移动数据时任务会失败并保留在列表中，可连接 Wi‑Fi 后重试。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Instagram 账号") {

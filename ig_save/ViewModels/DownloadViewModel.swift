@@ -29,6 +29,8 @@ final class DownloadViewModel: ObservableObject {
     @Published var selectedProfilePostIDs: Set<String> = []
     @Published private(set) var isLoadingProfile = false
     @Published private(set) var profileError: String?
+    @Published private(set) var favoriteProfiles: [FavoriteProfile] = FavoriteProfileStore.load()
+    @Published private(set) var lastProfileNewContentCount = 0
 
     private let resolver = InstagramMediaResolver()
     private let webStoryResolver = InstagramWebStoryResolver()
@@ -38,6 +40,10 @@ final class DownloadViewModel: ObservableObject {
     private let thumbnailGenerator = ThumbnailGenerator()
     private var queueWorker: Task<Void, Never>?
     private var preparedResolutions: [UUID: MediaResolution] = [:]
+
+    init() {
+        AppPreferences.registerDefaults()
+    }
 
     var canStart: Bool {
         !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isPreparingPreview
@@ -64,6 +70,11 @@ final class DownloadViewModel: ObservableObject {
         profilePosts.filter { $0.contentKind == .story }
     }
 
+    var isCurrentProfileFavorite: Bool {
+        guard let username = normalizedProfileUsername(profileUsername) else { return false }
+        return favoriteProfiles.contains { $0.username.caseInsensitiveCompare(username) == .orderedSame }
+    }
+
     func pasteFromClipboard() {
         #if canImport(UIKit)
         if let text = UIPasteboard.general.string {
@@ -76,6 +87,12 @@ final class DownloadViewModel: ObservableObject {
         let input = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !input.isEmpty else {
+            return
+        }
+
+        if !AppPreferences.previewsBeforeSaving {
+            inputText = ""
+            enqueue(input: input)
             return
         }
 
@@ -160,13 +177,43 @@ final class DownloadViewModel: ObservableObject {
 
         Task {
             do {
-                profilePosts = try await profileFeedResolver.latestPosts(for: username, limitPerKind: 5)
+                let posts = try await profileFeedResolver.latestPosts(for: username, limitPerKind: 5)
+                profilePosts = posts
+                updateFavoriteSnapshot(for: username, posts: posts)
             } catch {
                 profileError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
 
             isLoadingProfile = false
         }
+    }
+
+    func toggleCurrentProfileFavorite() {
+        guard let username = normalizedProfileUsername(profileUsername) else {
+            return
+        }
+
+        if let index = favoriteProfiles.firstIndex(where: {
+            $0.username.caseInsensitiveCompare(username) == .orderedSame
+        }) {
+            favoriteProfiles.remove(at: index)
+        } else {
+            favoriteProfiles.append(FavoriteProfile(
+                username: username,
+                lastKnownPostIDs: Set(profilePosts.map(\.id))
+            ))
+        }
+        FavoriteProfileStore.persist(favoriteProfiles)
+    }
+
+    func selectFavoriteProfile(_ favorite: FavoriteProfile) {
+        profileUsername = favorite.username
+        fetchLatestProfilePosts()
+    }
+
+    func removeFavoriteProfile(_ favorite: FavoriteProfile) {
+        favoriteProfiles.removeAll { $0.id == favorite.id }
+        FavoriteProfileStore.persist(favoriteProfiles)
     }
 
     func toggleProfilePost(_ post: InstagramProfilePost) {
@@ -257,7 +304,14 @@ final class DownloadViewModel: ObservableObject {
 
     func resumePendingJobs() {
         MediaDownloader.cleanCache()
+        consumePendingImports()
         ensureQueueProcessing()
+    }
+
+    func consumePendingImports() {
+        for link in PendingImportStore.consumeAll() {
+            enqueue(input: link)
+        }
     }
 
     func retry(_ job: SaveJob, allowDuplicate: Bool = false) {
@@ -364,7 +418,8 @@ final class DownloadViewModel: ObservableObject {
                 resolution = try await resolveMedia(input)
             }
 
-            if !job.allowsDuplicate,
+            if AppPreferences.protectsAgainstDuplicates,
+               !job.allowsDuplicate,
                let previousSave = RecentSaveStore.previousSave(for: resolution.sourceURL.absoluteString) {
                 update(jobID, status: .duplicate(previousSavedAt: previousSave.savedAt))
                 return
@@ -379,7 +434,10 @@ final class DownloadViewModel: ObservableObject {
                 let current = offset + 1
                 update(jobID, status: .downloading(current: current, total: assets.count))
 
-                let fileURL = try await downloader.download(asset)
+                let fileURL = try await downloader.download(
+                    asset,
+                    allowsCellularAccess: AppPreferences.allowsCellularDownloads
+                )
                 downloadedMedia.append(DownloadedMedia(fileURL: fileURL, kind: asset.kind))
 
                 update(jobID, status: .saving(current: current, total: assets.count))
@@ -392,7 +450,7 @@ final class DownloadViewModel: ObservableObject {
                 savedCount += 1
             }
 
-            addRecentSave(input: input, resolution: resolution, downloadedMedia: downloadedMedia, savedCount: savedCount)
+            await addRecentSave(input: input, resolution: resolution, downloadedMedia: downloadedMedia, savedCount: savedCount)
             update(jobID, status: .saved(count: savedCount))
             MediaDownloader.cleanCache()
         } catch is CancellationError {
@@ -434,14 +492,17 @@ final class DownloadViewModel: ObservableObject {
         resolution: MediaResolution,
         downloadedMedia: [DownloadedMedia],
         savedCount: Int
-    ) {
+    ) async {
         guard savedCount > 0 else {
             return
         }
 
         let previewSource = downloadedMedia.first(where: { $0.kind == .image }) ?? downloadedMedia.first
-        let previewFilename = previewSource.flatMap {
-            thumbnailGenerator.makeThumbnail(for: $0.fileURL, kind: $0.kind)
+        let previewFilename: String?
+        if let previewSource {
+            previewFilename = await thumbnailGenerator.makeThumbnail(for: previewSource.fileURL, kind: previewSource.kind)
+        } else {
+            previewFilename = nil
         }
         let save = RecentSave(
             username: displayUsername(from: resolution, input: input),
@@ -479,6 +540,32 @@ final class DownloadViewModel: ObservableObject {
         }
 
         return url.pathComponents.contains("stories")
+    }
+
+    private func normalizedProfileUsername(_ rawValue: String) -> String? {
+        let value = rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+        guard !value.isEmpty else { return nil }
+        return value.lowercased()
+    }
+
+    private func updateFavoriteSnapshot(for rawUsername: String, posts: [InstagramProfilePost]) {
+        guard
+            let username = normalizedProfileUsername(rawUsername),
+            let index = favoriteProfiles.firstIndex(where: {
+                $0.username.caseInsensitiveCompare(username) == .orderedSame
+            })
+        else {
+            lastProfileNewContentCount = 0
+            return
+        }
+
+        let currentIDs = Set(posts.filter { $0.contentKind != .story }.map(\.id))
+        let previousIDs = favoriteProfiles[index].lastKnownPostIDs
+        lastProfileNewContentCount = previousIDs.isEmpty ? 0 : currentIDs.subtracting(previousIDs).count
+        favoriteProfiles[index].lastKnownPostIDs = currentIDs
+        FavoriteProfileStore.persist(favoriteProfiles)
     }
 }
 

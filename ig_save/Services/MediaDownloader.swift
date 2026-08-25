@@ -17,7 +17,7 @@ enum MediaDownloaderError: LocalizedError, Sendable {
 }
 
 struct MediaDownloader: Sendable {
-    func download(_ asset: MediaAsset) async throws -> URL {
+    func download(_ asset: MediaAsset, allowsCellularAccess: Bool = true) async throws -> URL {
         var request = URLRequest(url: asset.sourceURL)
         request.timeoutInterval = 60
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
@@ -27,7 +27,10 @@ struct MediaDownloader: Sendable {
             request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         }
 
-        let (temporaryURL, response) = try await URLSession.shared.download(for: request)
+        let configuration = URLSessionConfiguration.default
+        configuration.allowsCellularAccess = allowsCellularAccess
+        let session = URLSession(configuration: configuration)
+        let (temporaryURL, response) = try await session.download(for: request)
 
         guard
             let httpResponse = response as? HTTPURLResponse,

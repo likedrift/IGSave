@@ -11,9 +11,9 @@ import UIKit
 #endif
 
 struct ThumbnailGenerator: Sendable {
-    func makeThumbnail(for fileURL: URL, kind: MediaKind) -> String? {
+    func makeThumbnail(for fileURL: URL, kind: MediaKind) async -> String? {
         #if canImport(UIKit)
-        guard let image = sourceImage(for: fileURL, kind: kind) else {
+        guard let image = await sourceImage(for: fileURL, kind: kind) else {
             return nil
         }
 
@@ -39,29 +39,29 @@ struct ThumbnailGenerator: Sendable {
     }
 
     #if canImport(UIKit)
-    private func sourceImage(for fileURL: URL, kind: MediaKind) -> UIImage? {
+    private func sourceImage(for fileURL: URL, kind: MediaKind) async -> UIImage? {
         switch kind {
         case .image:
             UIImage(contentsOfFile: fileURL.path)
         case .video:
-            videoThumbnail(for: fileURL)
+            await videoThumbnail(for: fileURL)
         case .unknown:
-            UIImage(contentsOfFile: fileURL.path) ?? videoThumbnail(for: fileURL)
+            if let image = UIImage(contentsOfFile: fileURL.path) {
+                image
+            } else {
+                await videoThumbnail(for: fileURL)
+            }
         }
     }
 
-    private func videoThumbnail(for fileURL: URL) -> UIImage? {
-        let asset = AVAsset(url: fileURL)
+    private func videoThumbnail(for fileURL: URL) async -> UIImage? {
+        let asset = AVURLAsset(url: fileURL)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
 
         do {
-            let cgImage = try generator.copyCGImage(
-                at: CMTime(seconds: 0.2, preferredTimescale: 600),
-                actualTime: nil
-            )
-
-            return UIImage(cgImage: cgImage)
+            let result = try await generator.image(at: CMTime(seconds: 0.2, preferredTimescale: 600))
+            return UIImage(cgImage: result.image)
         } catch {
             return nil
         }
