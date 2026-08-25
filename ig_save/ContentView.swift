@@ -13,7 +13,11 @@ struct ContentView: View {
     @State private var selectedTab: AppTab = .save
     @State private var inputMode: SaveInputMode = .link
     @State private var profileContentFilter: ProfileContentFilter = .post
+    @State private var recentContentFilter: RecentContentFilter = .all
+    @State private var recentSearchText = ""
+    @State private var isShowingSettings = false
     @FocusState private var isInputFocused: Bool
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -49,6 +53,31 @@ struct ContentView: View {
                 viewModel.finishInstagramLogin()
             }
         }
+        .sheet(isPresented: $viewModel.isShowingPreview, onDismiss: viewModel.dismissPreview) {
+            if let resolution = viewModel.previewResolution {
+                MediaPreviewView(
+                    resolution: resolution,
+                    selectedAssetIDs: viewModel.selectedPreviewAssetIDs,
+                    onToggle: viewModel.togglePreviewAsset,
+                    onCancel: viewModel.dismissPreview,
+                    onConfirm: viewModel.confirmPreviewSave
+                )
+            }
+        }
+        .sheet(isPresented: $isShowingSettings) {
+            SettingsView(
+                sessionState: viewModel.instagramSessionState,
+                onLogin: {
+                    isShowingSettings = false
+                    Task { @MainActor in
+                        await Task.yield()
+                        viewModel.showInstagramLogin()
+                    }
+                },
+                onLogout: viewModel.logoutInstagram,
+                onOpenSettings: viewModel.openAppSettings
+            )
+        }
     }
 
     private var saveNavigation: some View {
@@ -74,7 +103,14 @@ struct ContentView: View {
             .navigationTitle("IG Save")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        isShowingSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("设置")
+
                     Button {
                         viewModel.showInstagramLogin()
                     } label: {
@@ -91,35 +127,74 @@ struct ContentView: View {
             ZStack {
                 AppBackdrop()
 
-                if viewModel.recentSaves.isEmpty {
+                if filteredRecentSaves.isEmpty && recentSearchText.isEmpty && recentContentFilter == .all {
                     ContentUnavailableView(
                         "还没有保存记录",
                         systemImage: "photo.stack",
                         description: Text("保存成功的帖子、Reel 和快拍会显示在这里。")
                     )
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 14) {
-                            ForEach(viewModel.recentSaves) { save in
-                                RecentSaveRow(save: save)
+                    VStack(spacing: 12) {
+                        Picker("内容类型", selection: $recentContentFilter) {
+                            ForEach(RecentContentFilter.allCases) { filter in
+                                Text(filter.title).tag(filter)
                             }
                         }
+                        .pickerStyle(.segmented)
                         .padding(.horizontal, 20)
-                        .padding(.top, 12)
-                        .padding(.bottom, 36)
+
+                        if filteredRecentSaves.isEmpty {
+                            ContentUnavailableView.search(text: recentSearchText)
+                        } else {
+                            ScrollView {
+                                LazyVStack(spacing: 14) {
+                                    ForEach(filteredRecentSaves) { save in
+                                        RecentSaveRow(
+                                            save: save,
+                                            onOpen: {
+                                                if let url = URL(string: save.sourceURL) { openURL(url) }
+                                            },
+                                            onCopy: { viewModel.copyRecentLink(save) },
+                                            onSaveAgain: { viewModel.saveAgain(save) },
+                                            onDelete: { viewModel.deleteRecentSave(save) }
+                                        )
+                                    }
+                                }
+                                .padding(.horizontal, 20)
+                                .padding(.bottom, 36)
+                            }
+                            .scrollIndicators(.hidden)
+                        }
                     }
-                    .scrollIndicators(.hidden)
                 }
             }
             .navigationTitle("最近保存")
             .navigationBarTitleDisplayMode(.large)
+            .searchable(text: $recentSearchText, prompt: "搜索账号或链接")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Text("\(viewModel.recentSaves.count) / 5")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    Menu {
+                        Button("清空全部记录", role: .destructive) {
+                            viewModel.clearRecentSaves()
+                        }
+                    } label: {
+                        Text("\(viewModel.recentSaves.count)")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .disabled(viewModel.recentSaves.isEmpty)
                 }
             }
+        }
+    }
+
+    private var filteredRecentSaves: [RecentSave] {
+        let query = recentSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return viewModel.recentSaves.filter { save in
+            let matchesKind = recentContentFilter.matches(save.contentKind)
+            let matchesQuery = query.isEmpty ||
+                save.username.lowercased().contains(query) ||
+                save.sourceURL.lowercased().contains(query)
+            return matchesKind && matchesQuery
         }
     }
 
@@ -199,7 +274,7 @@ struct ContentView: View {
                     Text(viewModel.hasInstagramSession ? "Instagram 已连接" : "连接 Instagram")
                         .font(.subheadline.weight(.semibold))
 
-                    Text(viewModel.hasInstagramSession ? "可以读取当前账号有权访问的内容" : "账号获取和快拍需要登录")
+                    Text(instagramSessionSubtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -213,6 +288,20 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private var instagramSessionSubtitle: String {
+        switch viewModel.instagramSessionState {
+        case let .connected(username):
+            if let username, !username.isEmpty {
+                return "已登录 @\(username)"
+            }
+            return "可以读取当前账号有权访问的内容"
+        case .expired:
+            return "登录已过期，请重新连接"
+        case .disconnected:
+            return "账号获取和快拍需要登录"
+        }
     }
 
     private var linkInput: some View {
@@ -244,6 +333,12 @@ struct ContentView: View {
             .frame(minHeight: 58, alignment: .top)
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
+            if let previewError = viewModel.previewError {
+                Label(previewError, systemImage: "exclamationmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
             GlassEffectContainer(spacing: 12) {
                 HStack(spacing: 12) {
                     Button {
@@ -261,8 +356,13 @@ struct ContentView: View {
                         viewModel.start()
                     } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: "text.badge.plus")
-                            Text("加入保存队列")
+                            if viewModel.isPreparingPreview {
+                                ProgressView()
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "photo.on.rectangle.angled")
+                            }
+                            Text(viewModel.isPreparingPreview ? "正在解析" : "预览并选择")
                         }
                         .font(.headline)
                         .frame(maxWidth: .infinity)
@@ -502,6 +602,209 @@ struct ContentView: View {
     }
 }
 
+private enum RecentContentFilter: String, CaseIterable, Identifiable {
+    case all
+    case post
+    case reel
+    case story
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "全部"
+        case .post: "帖子"
+        case .reel: "Reels"
+        case .story: "快拍"
+        }
+    }
+
+    func matches(_ kind: InstagramContentKind) -> Bool {
+        switch self {
+        case .all: true
+        case .post: kind == .post || kind == .direct || kind == .unknown
+        case .reel: kind == .reel
+        case .story: kind == .story
+        }
+    }
+}
+
+private struct MediaPreviewView: View {
+    let resolution: MediaResolution
+    let selectedAssetIDs: Set<UUID>
+    let onToggle: (MediaAsset) -> Void
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(resolution.username.map { "@\($0)" } ?? resolution.sourceURL.host(percentEncoded: false) ?? "Instagram")
+                            .font(.title3.weight(.bold))
+                        Text("已识别 \(resolution.assets.count) 项，选择要保存的内容")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    LazyVGrid(
+                        columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
+                        spacing: 12
+                    ) {
+                        ForEach(resolution.assets) { asset in
+                            PreviewAssetTile(
+                                asset: asset,
+                                isSelected: selectedAssetIDs.contains(asset.id)
+                            ) {
+                                onToggle(asset)
+                            }
+                        }
+                    }
+                }
+                .padding(20)
+            }
+            .navigationTitle("保存预览")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消", action: onCancel)
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                Button(action: onConfirm) {
+                    Label("保存已选（\(selectedAssetIDs.count)）", systemImage: "arrow.down.to.line")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Brand.accent)
+                .disabled(selectedAssetIDs.isEmpty)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(.regularMaterial)
+            }
+        }
+    }
+}
+
+private struct PreviewAssetTile: View {
+    let asset: MediaAsset
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+
+                if asset.kind == .image {
+                    AsyncImage(url: asset.sourceURL) { phase in
+                        if case let .success(image) = phase {
+                            image.resizable().scaledToFill()
+                        } else {
+                            ProgressView()
+                        }
+                    }
+                } else {
+                    LinearGradient(
+                        colors: [Brand.accent.opacity(0.72), Brand.violet.opacity(0.78)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+
+                VStack {
+                    HStack {
+                        Spacer()
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 25, weight: .bold))
+                            .foregroundStyle(isSelected ? Brand.accent : .white)
+                            .shadow(radius: 3)
+                    }
+                    Spacer()
+                    HStack {
+                        Label(asset.kind == .video ? "视频" : "图片", systemImage: asset.kind == .video ? "video.fill" : "photo.fill")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(.black.opacity(0.45), in: Capsule())
+                        Spacer()
+                    }
+                }
+                .padding(9)
+            }
+            .aspectRatio(1, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(isSelected ? Brand.accent : Color.primary.opacity(0.08), lineWidth: isSelected ? 3 : 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SettingsView: View {
+    let sessionState: InstagramSessionState
+    let onLogin: () -> Void
+    let onLogout: () -> Void
+    let onOpenSettings: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(AppPreferences.dedicatedAlbumKey) private var usesDedicatedAlbum = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("保存位置") {
+                    Toggle("整理到“IG Save”相册", isOn: $usesDedicatedAlbum)
+                    Text(usesDedicatedAlbum ? "新保存的内容会同时加入 IG Save 系统相册。" : "内容直接添加到系统照片图库。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Instagram 账号") {
+                    LabeledContent("状态", value: sessionDescription)
+                    if sessionState.isConnected {
+                        Button("退出并清除登录数据", role: .destructive, action: onLogout)
+                    } else {
+                        Button("连接 Instagram", action: onLogin)
+                    }
+                }
+
+                Section("系统权限") {
+                    Button("打开 IG Save 系统设置", action: onOpenSettings)
+                    Text("如果相册权限曾被拒绝，可在这里重新开启。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("设置")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private var sessionDescription: String {
+        switch sessionState {
+        case let .connected(username): username.map { "已连接 @\($0)" } ?? "已连接"
+        case .expired: "已过期"
+        case .disconnected: "未连接"
+        }
+    }
+}
+
 private enum AppTab: Hashable {
     case save
     case recents
@@ -686,6 +989,10 @@ private struct ProfilePostTile: View {
 
 private struct RecentSaveRow: View {
     let save: RecentSave
+    let onOpen: () -> Void
+    let onCopy: () -> Void
+    let onSaveAgain: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 15) {
@@ -699,7 +1006,7 @@ private struct RecentSaveRow: View {
 
                     Spacer(minLength: 0)
 
-                    Text(save.savedAt.formatted(date: .omitted, time: .shortened))
+                    Text(save.savedAt.formatted(date: .abbreviated, time: .shortened))
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.tertiary)
                 }
@@ -718,6 +1025,17 @@ private struct RecentSaveRow: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
+            }
+
+            Menu {
+                Button("打开原链接", systemImage: "safari", action: onOpen)
+                Button("复制链接", systemImage: "doc.on.doc", action: onCopy)
+                Button("再次保存", systemImage: "arrow.clockwise", action: onSaveAgain)
+                Divider()
+                Button("删除记录", systemImage: "trash", role: .destructive, action: onDelete)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 28, height: 44)
             }
         }
         .padding(13)

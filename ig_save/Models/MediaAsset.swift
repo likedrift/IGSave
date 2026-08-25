@@ -10,7 +10,7 @@ enum MediaKind: String, Hashable, Sendable {
     case video
     case unknown
 
-    static func infer(from url: URL) -> MediaKind {
+    nonisolated static func infer(from url: URL) -> MediaKind {
         let ext = url.pathExtension.lowercased()
 
         if ["jpg", "jpeg", "png", "heic", "heif", "webp", "gif"].contains(ext) {

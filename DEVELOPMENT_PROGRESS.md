@@ -152,6 +152,16 @@ Build a personal-use iOS app that accepts a pasted Instagram link and saves the 
 - Added age/size-based cleanup for downloaded media cache files.
 - Verified the app and embedded Share Extension with Xcode 26.6 against the iOS 26.5 device SDK.
 
+### 2026-08-25 - Phase 2: Preview, History, And Recovery
+
+- Manual links now resolve into a media preview before saving.
+- Added per-item selection for carousel images and videos before a task enters the queue.
+- Expanded recent saves from five entries to a 500-entry file-backed history with automatic migration.
+- Added history search, content-type filters, original-link opening, link copying, re-save, delete, and clear-all actions.
+- Added an optional dedicated “IG Save” Photos album with the appropriate read/write permission path.
+- Added validated Instagram session state, expired-session messaging, explicit logout/cookie cleanup, and a system settings shortcut for permission recovery.
+- Unified Debug and Release deployment targets at iOS 26.0.
+
 ## Next Tasks
 
 - Validate full build in Xcode.

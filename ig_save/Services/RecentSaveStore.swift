@@ -7,9 +7,14 @@ import Foundation
 
 enum RecentSaveStore {
     private static let storageKey = "recent-saves-v1"
-    private static let maxCount = 5
+    private static let maxCount = 500
 
     static func load() -> [RecentSave] {
+        if let data = try? Data(contentsOf: storageURL()),
+           let saves = try? JSONDecoder().decode([RecentSave].self, from: data) {
+            return Array(saves.prefix(maxCount))
+        }
+
         guard
             let data = UserDefaults.standard.data(forKey: storageKey),
             let saves = try? JSONDecoder().decode([RecentSave].self, from: data)
@@ -17,7 +22,10 @@ enum RecentSaveStore {
             return []
         }
 
-        return Array(saves.prefix(maxCount))
+        let migrated = Array(saves.prefix(maxCount))
+        persist(migrated)
+        UserDefaults.standard.removeObject(forKey: storageKey)
+        return migrated
     }
 
     static func add(_ save: RecentSave, to saves: [RecentSave]) -> [RecentSave] {
@@ -31,6 +39,19 @@ enum RecentSaveStore {
     static func previousSave(for sourceURL: String) -> RecentSave? {
         let key = normalizedSourceURL(sourceURL)
         return load().first { normalizedSourceURL($0.sourceURL) == key }
+    }
+
+    static func remove(_ save: RecentSave, from saves: [RecentSave]) -> [RecentSave] {
+        let nextSaves = saves.filter { $0.id != save.id }
+        persist(nextSaves)
+        pruneThumbnails(keeping: nextSaves)
+        return nextSaves
+    }
+
+    static func removeAll(from saves: [RecentSave]) -> [RecentSave] {
+        persist([])
+        pruneThumbnails(keeping: [])
+        return []
     }
 
     static func previewURL(for filename: String?) -> URL? {
@@ -57,7 +78,12 @@ enum RecentSaveStore {
             return
         }
 
-        UserDefaults.standard.set(data, forKey: storageKey)
+        let url = storageURL()
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? data.write(to: url, options: .atomic)
     }
 
     private static func pruneThumbnails(keeping saves: [RecentSave]) {
@@ -85,5 +111,11 @@ enum RecentSaveStore {
             value.removeLast()
         }
         return value
+    }
+
+    private static func storageURL() -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("History", isDirectory: true)
+            .appendingPathComponent("recent-saves-v2.json")
     }
 }
