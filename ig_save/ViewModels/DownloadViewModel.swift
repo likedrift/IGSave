@@ -13,7 +13,7 @@ import UIKit
 @MainActor
 final class DownloadViewModel: ObservableObject {
     @Published var inputText = ""
-    @Published private(set) var jobs: [SaveJob] = []
+    @Published private(set) var jobs: [SaveJob] = SaveJobStore.load()
     @Published private(set) var isWorking = false
     @Published private(set) var recentSaves: [RecentSave] = RecentSaveStore.load()
     @Published private(set) var hasInstagramSession = false
@@ -30,19 +30,19 @@ final class DownloadViewModel: ObservableObject {
     private let downloader = MediaDownloader()
     private let saver = PhotoLibrarySaver()
     private let thumbnailGenerator = ThumbnailGenerator()
+    private var queueWorker: Task<Void, Never>?
 
     var canStart: Bool {
-        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isWorking
+        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var canFetchProfile: Bool {
         !profileUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            !isLoadingProfile &&
-            !isWorking
+            !isLoadingProfile
     }
 
     var canSaveSelectedProfilePosts: Bool {
-        !selectedProfilePostIDs.isEmpty && !isWorking && !isLoadingProfile
+        !selectedProfilePostIDs.isEmpty && !isLoadingProfile
     }
 
     var profileRegularPosts: [InstagramProfilePost] {
@@ -68,23 +68,34 @@ final class DownloadViewModel: ObservableObject {
     func start() {
         let input = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !input.isEmpty, !isWorking else {
+        guard !input.isEmpty else {
             return
         }
 
-        isWorking = true
         inputText = ""
+        enqueue(input: input)
+    }
 
-        Task {
-            await run(input: input)
-            isWorking = false
+    @discardableResult
+    func handleIncomingURL(_ url: URL) -> Bool {
+        guard
+            url.scheme?.lowercased() == "igsave",
+            url.host(percentEncoded: false)?.lowercased() == "import",
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            let importedURL = components.queryItems?.first(where: { $0.name == "url" })?.value,
+            !importedURL.isEmpty
+        else {
+            return false
         }
+
+        enqueue(input: importedURL)
+        return true
     }
 
     func fetchLatestProfilePosts() {
         let username = profileUsername.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !username.isEmpty, !isLoadingProfile, !isWorking else {
+        guard !username.isEmpty, !isLoadingProfile else {
             return
         }
 
@@ -130,32 +141,15 @@ final class DownloadViewModel: ObservableObject {
         let selectedPosts = profilePosts
             .filter { selectedProfilePostIDs.contains($0.id) }
 
-        guard !selectedPosts.isEmpty, !isWorking else {
+        guard !selectedPosts.isEmpty else {
             return
         }
 
-        isWorking = true
-
-        Task {
-            for post in selectedPosts {
-                if post.contentKind == .story,
-                   let directMediaURL = post.directMediaURL,
-                   let mediaKind = post.mediaKind {
-                    await run(
-                        input: post.url.absoluteString,
-                        preResolved: storyResolution(
-                            for: post,
-                            mediaURL: directMediaURL,
-                            mediaKind: mediaKind
-                        )
-                    )
-                } else {
-                    await run(input: post.url.absoluteString)
-                }
-            }
-
-            isWorking = false
+        for post in selectedPosts {
+            enqueue(input: post.url.absoluteString)
         }
+
+        selectedProfilePostIDs = []
     }
 
     func showInstagramLogin() {
@@ -174,83 +168,134 @@ final class DownloadViewModel: ObservableObject {
         hasInstagramSession = await InstagramSessionStore.hasActiveSession()
     }
 
-    private func run(input: String, preResolved: MediaResolution? = nil) async {
-        let job = SaveJob(input: input, status: .resolving)
-        jobs.insert(job, at: 0)
+    func resumePendingJobs() {
+        MediaDownloader.cleanCache()
+        ensureQueueProcessing()
+    }
+
+    func retry(_ job: SaveJob, allowDuplicate: Bool = false) {
+        guard let index = jobs.firstIndex(where: { $0.id == job.id }) else {
+            return
+        }
+
+        jobs[index].status = .queued
+        jobs[index].allowsDuplicate = allowDuplicate || jobs[index].allowsDuplicate
+        persistJobs()
+        ensureQueueProcessing()
+    }
+
+    func cancel(_ job: SaveJob) {
+        guard let index = jobs.firstIndex(where: { $0.id == job.id }) else {
+            return
+        }
+
+        if jobs[index].status.isRunning {
+            queueWorker?.cancel()
+            queueWorker = nil
+        }
+
+        jobs[index].status = .cancelled
+        persistJobs()
+        isWorking = jobs.contains { $0.status.isRunning }
+
+        Task {
+            await Task.yield()
+            ensureQueueProcessing()
+        }
+    }
+
+    func remove(_ job: SaveJob) {
+        guard !job.status.isRunning else {
+            return
+        }
+
+        jobs.removeAll { $0.id == job.id }
+        persistJobs()
+    }
+
+    func clearFinishedJobs() {
+        jobs.removeAll { $0.status.isTerminal }
+        persistJobs()
+    }
+
+    private func enqueue(input: String, allowsDuplicate: Bool = false) {
+        jobs.insert(SaveJob(input: input, allowsDuplicate: allowsDuplicate), at: 0)
+        persistJobs()
+        ensureQueueProcessing()
+    }
+
+    private func ensureQueueProcessing() {
+        guard queueWorker == nil, jobs.contains(where: { $0.status == .queued }) else {
+            return
+        }
+
+        queueWorker = Task { [weak self] in
+            await self?.processQueue()
+        }
+    }
+
+    private func processQueue() async {
+        isWorking = true
+
+        while !Task.isCancelled,
+              let job = jobs
+                .filter({ $0.status == .queued })
+                .min(by: { $0.createdAt < $1.createdAt }) {
+            await run(jobID: job.id)
+        }
+
+        queueWorker = nil
+        isWorking = jobs.contains { $0.status.isRunning }
+
+        if jobs.contains(where: { $0.status == .queued }) {
+            ensureQueueProcessing()
+        }
+    }
+
+    private func run(jobID: UUID) async {
+        guard let job = jobs.first(where: { $0.id == jobID }) else {
+            return
+        }
+
+        let input = job.input
+        update(jobID, status: .resolving)
 
         do {
-            let resolution: MediaResolution
-            if let preResolved {
-                resolution = preResolved
-            } else {
-                resolution = try await resolveMedia(input)
+            try Task.checkCancellation()
+            let resolution = try await resolveMedia(input)
+
+            if !job.allowsDuplicate,
+               let previousSave = RecentSaveStore.previousSave(for: resolution.sourceURL.absoluteString) {
+                update(jobID, status: .duplicate(previousSavedAt: previousSave.savedAt))
+                return
             }
+
             let assets = resolution.assets
             var savedCount = 0
             var downloadedMedia: [DownloadedMedia] = []
 
             for (offset, asset) in assets.enumerated() {
+                try Task.checkCancellation()
                 let current = offset + 1
-                update(job.id, status: .downloading(current: current, total: assets.count))
+                update(jobID, status: .downloading(current: current, total: assets.count))
 
                 let fileURL = try await downloader.download(asset)
                 downloadedMedia.append(DownloadedMedia(fileURL: fileURL, kind: asset.kind))
 
-                update(job.id, status: .saving(current: current, total: assets.count))
+                update(jobID, status: .saving(current: current, total: assets.count))
                 try await saver.save(fileURL: fileURL, kind: asset.kind)
 
                 savedCount += 1
             }
 
             addRecentSave(input: input, resolution: resolution, downloadedMedia: downloadedMedia, savedCount: savedCount)
-            update(job.id, status: .saved(count: savedCount))
+            update(jobID, status: .saved(count: savedCount))
+            MediaDownloader.cleanCache()
+        } catch is CancellationError {
+            update(jobID, status: .cancelled)
         } catch {
-            update(job.id, status: .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription))
+            update(jobID, status: .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription))
         }
-
-    }
-
-    private func storyResolution(
-        for post: InstagramProfilePost,
-        mediaURL: URL,
-        mediaKind: MediaKind
-    ) -> MediaResolution {
-        let fileExtension: String
-        switch mediaKind {
-        case .image:
-            fileExtension = "jpg"
-        case .video:
-            fileExtension = "mp4"
-        case .unknown:
-            fileExtension = mediaURL.pathExtension.isEmpty ? "dat" : mediaURL.pathExtension
-        }
-
-        let username = storyUsername(from: post.url)
-        let asset = MediaAsset(
-            sourceURL: mediaURL,
-            kind: mediaKind,
-            suggestedFilename: "ig-story-\(post.id.replacingOccurrences(of: "story-", with: "")).\(fileExtension)"
-        )
-
-        return MediaResolution(
-            assets: [asset],
-            username: username,
-            contentKind: .story,
-            sourceURL: post.url
-        )
-    }
-
-    private func storyUsername(from url: URL) -> String? {
-        let components = url.pathComponents.filter { $0 != "/" }
-
-        guard
-            let storyIndex = components.firstIndex(of: "stories"),
-            components.indices.contains(storyIndex + 1)
-        else {
-            return nil
-        }
-
-        return components[storyIndex + 1]
     }
 
     private func resolveMedia(_ input: String) async throws -> MediaResolution {
@@ -273,6 +318,11 @@ final class DownloadViewModel: ObservableObject {
         }
 
         jobs[index].status = status
+        persistJobs()
+    }
+
+    private func persistJobs() {
+        SaveJobStore.persist(jobs)
     }
 
     private func addRecentSave(

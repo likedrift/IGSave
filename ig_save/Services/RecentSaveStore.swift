@@ -28,6 +28,11 @@ enum RecentSaveStore {
         return nextSaves
     }
 
+    static func previousSave(for sourceURL: String) -> RecentSave? {
+        let key = normalizedSourceURL(sourceURL)
+        return load().first { normalizedSourceURL($0.sourceURL) == key }
+    }
+
     static func previewURL(for filename: String?) -> URL? {
         guard let filename else {
             return nil
@@ -66,5 +71,19 @@ enum RecentSaveStore {
         for file in files where !keepFilenames.contains(file.lastPathComponent) {
             try? FileManager.default.removeItem(at: file)
         }
+    }
+
+    private static func normalizedSourceURL(_ rawValue: String) -> String {
+        guard var components = URLComponents(string: rawValue) else {
+            return rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+
+        components.query = nil
+        components.fragment = nil
+        var value = components.string?.lowercased() ?? rawValue.lowercased()
+        while value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
     }
 }

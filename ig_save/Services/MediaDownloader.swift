@@ -45,15 +45,50 @@ struct MediaDownloader: Sendable {
         return destinationURL
     }
 
+    static func cleanCache(maximumAge: TimeInterval = 7 * 24 * 60 * 60, maximumBytes: Int64 = 500 * 1_024 * 1_024) {
+        guard let directory = try? cacheDirectoryURL() else {
+            return
+        }
+
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
+        var files = ((try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: .skipsHiddenFiles
+        )) ?? []).compactMap { url -> (URL, Date, Int64)? in
+            guard let values = try? url.resourceValues(forKeys: keys) else {
+                return nil
+            }
+            return (url, values.contentModificationDate ?? .distantPast, Int64(values.fileSize ?? 0))
+        }
+
+        let expirationDate = Date().addingTimeInterval(-maximumAge)
+        for file in files where file.1 < expirationDate {
+            try? FileManager.default.removeItem(at: file.0)
+        }
+
+        files.removeAll { !FileManager.default.fileExists(atPath: $0.0.path) }
+        var totalBytes = files.reduce(Int64(0)) { $0 + $1.2 }
+
+        for file in files.sorted(by: { $0.1 < $1.1 }) where totalBytes > maximumBytes {
+            try? FileManager.default.removeItem(at: file.0)
+            totalBytes -= file.2
+        }
+    }
+
     private func cacheDirectory() throws -> URL {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let directory = base.appendingPathComponent("DownloadedMedia", isDirectory: true)
+        let directory = try Self.cacheDirectoryURL()
 
         if !FileManager.default.fileExists(atPath: directory.path) {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
 
         return directory
+    }
+
+    private static func cacheDirectoryURL() throws -> URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("DownloadedMedia", isDirectory: true)
     }
 
     private func uniqueFilename(_ filename: String) -> String {

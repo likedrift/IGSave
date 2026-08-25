@@ -141,6 +141,17 @@ Build a personal-use iOS app that accepts a pasted Instagram link and saves the 
 - Pending verification:
   - Full Xcode/iOS SDK build. Current terminal environment has Command Line Tools only and cannot locate `iphoneos` or `iphonesimulator` SDKs.
 
+### 2026-08-25 - Phase 1: Reliable Save Workflow
+
+- Added a system Share Extension that accepts shared URLs/text and hands the link to IG Save.
+- Added an `igsave://import` deep-link entry point for shared content.
+- Replaced the single transient save operation with a persistent FIFO task queue.
+- Added per-task queued/running/saved/failed/cancelled state, retry, cancellation, removal, and completed-task cleanup.
+- Added duplicate-source detection with an explicit “save anyway” recovery path.
+- Restores interrupted work as queued tasks on the next app launch.
+- Added age/size-based cleanup for downloaded media cache files.
+- Verified the app and embedded Share Extension with Xcode 26.6 against the iOS 26.5 device SDK.
+
 ## Next Tasks
 
 - Validate full build in Xcode.

@@ -27,8 +27,15 @@ struct ContentView: View {
         }
         .tint(Brand.accent)
         .tabBarMinimizeBehavior(.never)
+        .onOpenURL { url in
+            if viewModel.handleIncomingURL(url) {
+                selectedTab = .save
+                inputMode = .link
+            }
+        }
         .task {
             await viewModel.refreshInstagramSessionStatus()
+            viewModel.resumePendingJobs()
         }
         .sheet(
             isPresented: $viewModel.isShowingInstagramLogin,
@@ -54,7 +61,7 @@ struct ContentView: View {
                         saveHero
                         linkComposer
                         profilePostsSection
-                        statusPanel
+                        taskQueueSection
                         supportCard
                     }
                     .padding(.horizontal, 20)
@@ -254,14 +261,8 @@ struct ContentView: View {
                         viewModel.start()
                     } label: {
                         HStack(spacing: 8) {
-                            if viewModel.isWorking {
-                                ProgressView()
-                                    .tint(.white)
-                            } else {
-                                Image(systemName: "arrow.down.to.line")
-                            }
-
-                            Text(viewModel.isWorking ? "正在保存" : "保存到相册")
+                            Image(systemName: "text.badge.plus")
+                            Text("加入保存队列")
                         }
                         .font(.headline)
                         .frame(maxWidth: .infinity)
@@ -414,14 +415,8 @@ struct ContentView: View {
                     viewModel.saveSelectedProfilePosts()
                 } label: {
                     HStack(spacing: 8) {
-                        if viewModel.isWorking {
-                            ProgressView()
-                                .tint(.white)
-                        } else {
-                            Image(systemName: "arrow.down.to.line")
-                        }
-
-                        Text(viewModel.isWorking ? "正在保存" : "保存已选（\(viewModel.selectedProfilePostIDs.count)）")
+                        Image(systemName: "text.badge.plus")
+                        Text("加入队列（\(viewModel.selectedProfilePostIDs.count)）")
                     }
                     .font(.headline)
                     .frame(maxWidth: .infinity)
@@ -450,42 +445,40 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var statusPanel: some View {
-        if let job = viewModel.jobs.first {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 12) {
-                    Image(systemName: job.status.iconName)
-                        .font(.system(size: 16, weight: .semibold))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(job.status.tint)
-                        .frame(width: 34, height: 34)
-                        .background(job.status.tint.opacity(0.12), in: Circle())
-
+    private var taskQueueSection: some View {
+        if !viewModel.jobs.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(job.status.title)
-                            .font(.subheadline.weight(.semibold))
-
-                        Text(job.status.detail)
+                        Text("保存任务")
+                            .font(.headline)
+                        Text("任务会按加入顺序逐个完成")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
                     }
 
-                    Spacer(minLength: 8)
+                    Spacer()
 
-                    if job.status.isRunning {
-                        ProgressView()
-                            .controlSize(.small)
+                    if viewModel.jobs.contains(where: { $0.status.isTerminal }) {
+                        Button("清理") {
+                            viewModel.clearFinishedJobs()
+                        }
+                        .font(.caption.weight(.semibold))
                     }
                 }
 
-                Text(job.input)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                ForEach(Array(viewModel.jobs.prefix(6))) { job in
+                    SaveJobRow(
+                        job: job,
+                        onRetry: { viewModel.retry(job) },
+                        onForceSave: { viewModel.retry(job, allowDuplicate: true) },
+                        onCancel: { viewModel.cancel(job) },
+                        onRemove: { viewModel.remove(job) }
+                    )
+                }
             }
-            .padding(16)
-            .background(job.status.tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .padding(18)
+            .surfaceCard(radius: 24)
         }
     }
 
@@ -732,6 +725,66 @@ private struct RecentSaveRow: View {
     }
 }
 
+private struct SaveJobRow: View {
+    let job: SaveJob
+    let onRetry: () -> Void
+    let onForceSave: () -> Void
+    let onCancel: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: job.status.iconName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(job.status.tint)
+                    .frame(width: 32, height: 32)
+                    .background(job.status.tint.opacity(0.12), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(job.status.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(job.status.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 8)
+
+                if job.status.isRunning {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            Text(job.input)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+
+            HStack(spacing: 14) {
+                switch job.status {
+                case .queued, .idle, .resolving, .downloading, .saving:
+                    Button("取消", action: onCancel)
+                case .failed, .cancelled:
+                    Button("重试", action: onRetry)
+                    Button("移除", action: onRemove)
+                case .duplicate:
+                    Button("仍要保存", action: onForceSave)
+                    Button("移除", action: onRemove)
+                case .saved:
+                    Button("移除", action: onRemove)
+                }
+            }
+            .font(.caption.weight(.semibold))
+        }
+        .padding(14)
+        .background(job.status.tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
 private struct RecentPreview: View {
     let filename: String?
     let contentKind: InstagramContentKind
@@ -807,6 +860,8 @@ private extension SaveStatus {
         switch self {
         case .idle:
             "clock"
+        case .queued:
+            "text.badge.plus"
         case .resolving:
             "sparkle.magnifyingglass"
         case .downloading:
@@ -815,8 +870,12 @@ private extension SaveStatus {
             "photo.badge.plus"
         case .saved:
             "checkmark.circle.fill"
+        case .duplicate:
+            "checkmark.circle.badge.questionmark"
         case .failed:
             "exclamationmark.triangle.fill"
+        case .cancelled:
+            "xmark.circle.fill"
         }
     }
 
@@ -824,9 +883,13 @@ private extension SaveStatus {
         switch self {
         case .saved:
             .green
+        case .duplicate:
+            .orange
         case .failed:
             .red
-        case .idle:
+        case .cancelled:
+            .secondary
+        case .idle, .queued:
             .secondary
         case .resolving, .downloading, .saving:
             Brand.accent
@@ -837,6 +900,8 @@ private extension SaveStatus {
         switch self {
         case .idle:
             "等待开始"
+        case .queued:
+            "已加入队列"
         case .resolving:
             "正在识别链接中的媒体"
         case let .downloading(current, total):
@@ -845,8 +910,12 @@ private extension SaveStatus {
             "正在写入相册，第 \(current) 项，共 \(total) 项"
         case let .saved(count):
             "\(count) 个文件已写入系统相册"
+        case let .duplicate(previousSavedAt):
+            "上次保存于 \(previousSavedAt.formatted(date: .abbreviated, time: .shortened))"
         case let .failed(message):
             message
+        case .cancelled:
+            "可以重新加入队列"
         }
     }
 }
