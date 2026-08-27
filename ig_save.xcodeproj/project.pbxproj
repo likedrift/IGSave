@@ -11,6 +11,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		B1000000000000000000000A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 29BE56ED2FA7DAA900CD1C8F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 29BE56F42FA7DAA900CD1C8F;
+			remoteInfo = ig_save;
+		};
 		A1000000000000000000000C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 29BE56ED2FA7DAA900CD1C8F /* Project object */;
@@ -37,6 +44,7 @@
 /* Begin PBXFileReference section */
 		29BE56F52FA7DAA900CD1C8F /* IGSave.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = IGSave.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000001 /* IG Save Share.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "IG Save Share.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000001 /* IGSaveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = IGSaveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -57,6 +65,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		B10000000000000000000002 /* ig_saveTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ig_saveTests;
+			sourceTree = "<group>";
+		};
 		29BE56F72FA7DAA900CD1C8F /* ig_save */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -76,6 +89,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		B10000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		29BE56F22FA7DAA900CD1C8F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -98,6 +118,7 @@
 			children = (
 				29BE56F72FA7DAA900CD1C8F /* ig_save */,
 				A10000000000000000000002 /* ig_save_share */,
+				B10000000000000000000002 /* ig_saveTests */,
 				29BE56F62FA7DAA900CD1C8F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -107,6 +128,7 @@
 			children = (
 				29BE56F52FA7DAA900CD1C8F /* IGSave.app */,
 				A10000000000000000000001 /* IG Save Share.appex */,
+				B10000000000000000000001 /* IGSaveTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -114,6 +136,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		B10000000000000000000006 /* IGSaveTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B10000000000000000000007 /* Build configuration list for PBXNativeTarget "IGSaveTests" */;
+			buildPhases = (
+				B10000000000000000000004 /* Sources */,
+				B10000000000000000000003 /* Frameworks */,
+				B10000000000000000000005 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B1000000000000000000000B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B10000000000000000000002 /* ig_saveTests */,
+			);
+			name = IGSaveTests;
+			packageProductDependencies = (
+			);
+			productName = IGSaveTests;
+			productReference = B10000000000000000000001 /* IGSaveTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		29BE56F42FA7DAA900CD1C8F /* ig_save */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 29BE57002FA7DAAA00CD1C8F /* Build configuration list for PBXNativeTarget "ig_save" */;
@@ -176,6 +221,10 @@
 					A10000000000000000000006 = {
 						CreatedOnToolsVersion = 26.4;
 					};
+					B10000000000000000000006 = {
+						CreatedOnToolsVersion = 26.4;
+						TestTargetID = 29BE56F42FA7DAA900CD1C8F;
+					};
 				};
 			};
 			buildConfigurationList = 29BE56F02FA7DAA900CD1C8F /* Build configuration list for PBXProject "ig_save" */;
@@ -194,11 +243,19 @@
 			targets = (
 				29BE56F42FA7DAA900CD1C8F /* ig_save */,
 				A10000000000000000000006 /* IG Save Share */,
+				B10000000000000000000006 /* IGSaveTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		B10000000000000000000005 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		29BE56F32FA7DAA900CD1C8F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -216,6 +273,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		B10000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		29BE56F12FA7DAA900CD1C8F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -233,6 +297,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		B1000000000000000000000B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 29BE56F42FA7DAA900CD1C8F /* ig_save */;
+			targetProxy = B1000000000000000000000A /* PBXContainerItemProxy */;
+		};
 		A1000000000000000000000D /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = A10000000000000000000006 /* IG Save Share */;
@@ -241,6 +310,50 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		B10000000000000000000008 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 9MDR332MSG;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.haru.ig-saveTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/IGSave.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/IGSave";
+				TEST_TARGET_NAME = ig_save;
+			};
+			name = Debug;
+		};
+		B10000000000000000000009 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 9MDR332MSG;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.haru.ig-saveTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/IGSave.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/IGSave";
+				TEST_TARGET_NAME = ig_save;
+			};
+			name = Release;
+		};
 		29BE56FE2FA7DAAA00CD1C8F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -488,6 +601,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		B10000000000000000000007 /* Build configuration list for PBXNativeTarget "IGSaveTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B10000000000000000000008 /* Debug */,
+				B10000000000000000000009 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		29BE56F02FA7DAA900CD1C8F /* Build configuration list for PBXProject "ig_save" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

@@ -327,8 +327,7 @@ final class DownloadViewModel: ObservableObject {
             return
         }
 
-        jobs[index].status = .queued
-        jobs[index].allowsDuplicate = allowDuplicate || jobs[index].allowsDuplicate
+        jobs[index].prepareForRetry(forceDuplicate: allowDuplicate)
         persistJobs()
         ensureQueueProcessing()
         HapticFeedback.selection()
@@ -340,18 +339,17 @@ final class DownloadViewModel: ObservableObject {
         }
 
         if jobs[index].status.isRunning {
+            jobs[index].status = .cancelling
+            jobs[index].updatedAt = Date()
+            persistJobs()
             queueWorker?.cancel()
-            queueWorker = nil
+        } else {
+            jobs[index].status = .cancelled
+            jobs[index].attemptID = nil
+            jobs[index].updatedAt = Date()
+            persistJobs()
         }
-
-        jobs[index].status = .cancelled
-        persistJobs()
         isWorking = jobs.contains { $0.status.isRunning }
-
-        Task {
-            await Task.yield()
-            ensureQueueProcessing()
-        }
     }
 
     func cancelBatch(containing job: SaveJob) {
@@ -361,13 +359,18 @@ final class DownloadViewModel: ObservableObject {
         }
 
         let hasRunningJob = jobs.contains { $0.batchID == batchID && $0.status.isRunning }
-        if hasRunningJob {
-            queueWorker?.cancel()
-            queueWorker = nil
-        }
 
         for index in jobs.indices where jobs[index].batchID == batchID && !jobs[index].status.isTerminal {
-            jobs[index].status = .cancelled
+            if jobs[index].status.isRunning {
+                jobs[index].status = .cancelling
+            } else {
+                jobs[index].status = .cancelled
+                jobs[index].attemptID = nil
+            }
+            jobs[index].updatedAt = Date()
+        }
+        if hasRunningJob {
+            queueWorker?.cancel()
         }
         persistJobs()
         HapticFeedback.warning()
@@ -432,8 +435,14 @@ final class DownloadViewModel: ObservableObject {
 
         if !Task.isCancelled {
             let processedJobs = jobs.filter { processedJobIDs.contains($0.id) }
-            let successCount = processedJobs.filter {
-                if case .saved = $0.status { return true }
+            let successCount = processedJobs.filter { job in
+                switch job.status {
+                case .saved, .partiallySaved: true
+                default: false
+                }
+            }.count
+            let partialCount = processedJobs.filter {
+                if case .partiallySaved = $0.status { return true }
                 return false
             }.count
             let failureCount = processedJobs.filter {
@@ -444,6 +453,7 @@ final class DownloadViewModel: ObservableObject {
             }.count
             await NotificationService.notifySaveCompletion(
                 successCount: successCount,
+                partialCount: partialCount,
                 failureCount: failureCount
             )
 
@@ -465,66 +475,110 @@ final class DownloadViewModel: ObservableObject {
     }
 
     private func run(jobID: UUID) async {
-        guard let job = jobs.first(where: { $0.id == jobID }) else {
+        guard let attemptID = beginAttempt(for: jobID),
+              let initialJob = jobs.first(where: { $0.id == jobID }) else {
             return
         }
 
-        let input = job.input
-        update(jobID, status: .resolving)
+        let input = initialJob.input
 
         do {
             try Task.checkCancellation()
             let resolution: MediaResolution
-            if let preparedResolution = preparedResolutions.removeValue(forKey: jobID) {
+            if let pendingAssets = initialJob.pendingAssets {
+                let assets = pendingAssets.compactMap(\.asset)
+                guard assets.count == pendingAssets.count else {
+                    throw SaveJobError.invalidRestoredAsset
+                }
+                let sourceURL = firstURL(in: input) ?? assets.first?.sourceURL
+                guard let sourceURL else {
+                    throw SaveJobError.invalidRestoredAsset
+                }
+                resolution = MediaResolution(
+                    assets: assets,
+                    username: initialJob.username,
+                    contentKind: initialJob.contentKind ?? .unknown,
+                    sourceURL: sourceURL
+                )
+            } else if let preparedResolution = preparedResolutions.removeValue(forKey: jobID) {
                 resolution = preparedResolution
             } else {
                 resolution = try await resolveMedia(input)
             }
 
-            updateMetadata(jobID, resolution: resolution)
+            updateMetadata(jobID, resolution: resolution, attemptID: attemptID)
+            prepareAssets(jobID, resolution: resolution, attemptID: attemptID)
 
             if AppPreferences.protectsAgainstDuplicates,
-               !job.allowsDuplicate,
+               !initialJob.allowsDuplicate,
+               (initialJob.successfulAssetCount ?? 0) == 0,
                let previousSave = RecentSaveStore.previousSave(for: resolution.sourceURL.absoluteString) {
-                update(jobID, status: .duplicate(previousSavedAt: previousSave.savedAt))
+                update(jobID, status: .duplicate(previousSavedAt: previousSave.savedAt), attemptID: attemptID)
                 HapticFeedback.warning()
                 return
             }
 
             let assets = resolution.assets
-            var savedCount = 0
-            var downloadedMedia: [DownloadedMedia] = []
+            if assets.isEmpty {
+                finalize(jobID, attemptID: attemptID)
+                return
+            }
 
             for (offset, asset) in assets.enumerated() {
                 try Task.checkCancellation()
                 let current = offset + 1
-                update(jobID, status: .downloading(current: current, total: assets.count))
-
-                let fileURL = try await downloader.download(
-                    asset,
-                    allowsCellularAccess: AppPreferences.allowsCellularDownloads
-                )
-                downloadedMedia.append(DownloadedMedia(fileURL: fileURL, kind: asset.kind))
-
-                update(jobID, status: .saving(current: current, total: assets.count))
-                try await saver.save(
-                    fileURL: fileURL,
-                    kind: asset.kind,
-                    albumName: AppPreferences.usesDedicatedAlbum ? AppPreferences.dedicatedAlbumName : nil
+                update(
+                    jobID,
+                    status: .downloading(current: current, total: assets.count),
+                    attemptID: attemptID
                 )
 
-                savedCount += 1
+                do {
+                    let fileURL = try await downloader.download(
+                        asset,
+                        allowsCellularAccess: AppPreferences.allowsCellularDownloads
+                    )
+
+                    update(
+                        jobID,
+                        status: .saving(current: current, total: assets.count),
+                        attemptID: attemptID
+                    )
+                    try await saver.save(
+                        fileURL: fileURL,
+                        kind: asset.kind,
+                        albumName: AppPreferences.usesDedicatedAlbum ? AppPreferences.dedicatedAlbumName : nil
+                    )
+
+                    await recordAssetSuccess(
+                        jobID,
+                        attemptID: attemptID,
+                        asset: asset,
+                        fileURL: fileURL,
+                        input: input,
+                        resolution: resolution
+                    )
+                    try Task.checkCancellation()
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    recordAssetFailure(
+                        jobID,
+                        attemptID: attemptID,
+                        asset: asset,
+                        message: errorMessage(for: error)
+                    )
+                }
             }
 
-            await addRecentSave(input: input, resolution: resolution, downloadedMedia: downloadedMedia, savedCount: savedCount)
-            update(jobID, status: .saved(count: savedCount))
-            removeSupersededTerminalJobs(keeping: jobID)
-            HapticFeedback.success()
+            finalize(jobID, attemptID: attemptID)
             MediaDownloader.cleanCache()
         } catch is CancellationError {
-            update(jobID, status: .cancelled)
+            update(jobID, status: .cancelled, attemptID: attemptID)
         } catch {
-            update(jobID, status: .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription))
+            let message = errorMessage(for: error)
+            setAttemptError(jobID, attemptID: attemptID, message: message)
+            finalize(jobID, attemptID: attemptID, fallbackError: message)
         }
     }
 
@@ -542,25 +596,177 @@ final class DownloadViewModel: ObservableObject {
         return try await webStoryResolver.resolve(input)
     }
 
-    private func update(_ id: UUID, status: SaveStatus) {
+    private func beginAttempt(for id: UUID) -> UUID? {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else {
+            return nil
+        }
+
+        let attemptID = UUID()
+        jobs[index].attemptID = attemptID
+        jobs[index].status = .resolving
+        jobs[index].updatedAt = Date()
+        persistJobs()
+        return attemptID
+    }
+
+    private func update(_ id: UUID, status: SaveStatus, attemptID: UUID? = nil) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }),
+              attemptID == nil || jobs[index].attemptID == attemptID else {
             return
         }
 
         jobs[index].status = status
+        jobs[index].updatedAt = Date()
         persistJobs()
     }
 
-    private func updateMetadata(_ id: UUID, resolution: MediaResolution) {
-        guard let index = jobs.firstIndex(where: { $0.id == id }) else {
+    private func updateMetadata(_ id: UUID, resolution: MediaResolution, attemptID: UUID) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }),
+              jobs[index].attemptID == attemptID else {
             return
         }
 
         jobs[index].username = resolution.username
         jobs[index].contentKind = resolution.contentKind
-        jobs[index].itemCount = resolution.assets.count
+        let expectedItemCount = (jobs[index].successfulAssetCount ?? 0) + resolution.assets.count
+        jobs[index].itemCount = max(jobs[index].itemCount ?? 0, expectedItemCount)
         jobs[index].previewURLString = resolution.assets.first?.sourceURL.absoluteString
+        jobs[index].updatedAt = Date()
         persistJobs()
+    }
+
+    private func prepareAssets(_ id: UUID, resolution: MediaResolution, attemptID: UUID) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }),
+              jobs[index].attemptID == attemptID else {
+            return
+        }
+
+        if jobs[index].pendingAssets == nil {
+            jobs[index].pendingAssets = resolution.assets.map(SaveAssetDescriptor.init)
+            jobs[index].failedAssets = []
+            jobs[index].successfulAssetCount = jobs[index].successfulAssetCount ?? 0
+            jobs[index].failedAssetCount = 0
+            jobs[index].lastErrorMessage = nil
+        }
+        jobs[index].updatedAt = Date()
+        persistJobs()
+    }
+
+    private func recordAssetFailure(
+        _ id: UUID,
+        attemptID: UUID,
+        asset: MediaAsset,
+        message: String
+    ) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }),
+              jobs[index].attemptID == attemptID else {
+            return
+        }
+
+        let descriptor = SaveAssetDescriptor(asset: asset)
+        jobs[index].pendingAssets?.removeFirst(descriptor)
+        jobs[index].failedAssets = (jobs[index].failedAssets ?? []) + [descriptor]
+        jobs[index].failedAssetCount = (jobs[index].failedAssetCount ?? 0) + 1
+        jobs[index].lastErrorMessage = message
+        jobs[index].updatedAt = Date()
+        persistJobs()
+    }
+
+    private func recordAssetSuccess(
+        _ id: UUID,
+        attemptID: UUID,
+        asset: MediaAsset,
+        fileURL: URL,
+        input: String,
+        resolution: MediaResolution
+    ) async {
+        guard let initialIndex = jobs.firstIndex(where: { $0.id == id }),
+              jobs[initialIndex].attemptID == attemptID else {
+            return
+        }
+
+        let recentSaveID = jobs[initialIndex].recentSaveID ?? UUID()
+        let existingSave = recentSaves.first(where: { $0.id == recentSaveID })
+        let previewFilename: String?
+        if let existingPreview = existingSave?.previewFilename {
+            previewFilename = existingPreview
+        } else {
+            previewFilename = await thumbnailGenerator.makeThumbnail(for: fileURL, kind: asset.kind)
+        }
+
+        guard let index = jobs.firstIndex(where: { $0.id == id }),
+              jobs[index].attemptID == attemptID else {
+            return
+        }
+
+        let savedCount = (jobs[index].successfulAssetCount ?? 0) + 1
+        jobs[index].pendingAssets?.removeFirst(SaveAssetDescriptor(asset: asset))
+        jobs[index].successfulAssetCount = savedCount
+        jobs[index].recentSaveID = recentSaveID
+        jobs[index].updatedAt = Date()
+
+        let save = RecentSave(
+            id: recentSaveID,
+            username: displayUsername(from: resolution, input: input),
+            savedAt: existingSave?.savedAt ?? Date(),
+            itemCount: savedCount,
+            contentKind: resolution.contentKind,
+            sourceURL: resolution.sourceURL.absoluteString,
+            previewFilename: previewFilename
+        )
+        recentSaves = RecentSaveStore.upsert(save, in: recentSaves)
+        persistJobs()
+    }
+
+    private func setAttemptError(_ id: UUID, attemptID: UUID, message: String) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }),
+              jobs[index].attemptID == attemptID else {
+            return
+        }
+
+        jobs[index].lastErrorMessage = message
+        jobs[index].updatedAt = Date()
+        persistJobs()
+    }
+
+    private func finalize(_ id: UUID, attemptID: UUID, fallbackError: String? = nil) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }),
+              jobs[index].attemptID == attemptID else {
+            return
+        }
+
+        let savedCount = jobs[index].successfulAssetCount ?? 0
+        let recordedFailureCount = jobs[index].failedAssetCount ?? 0
+        let unresolvedCount = jobs[index].pendingAssets?.count ?? 0
+        let failureCount = max(recordedFailureCount, unresolvedCount)
+        let message = jobs[index].lastErrorMessage ?? fallbackError ?? "部分内容未能保存，请重试。"
+
+        let terminalStatus = SaveCompletion.status(
+            saved: savedCount,
+            failed: failureCount,
+            message: message
+        )
+        jobs[index].status = terminalStatus
+
+        switch terminalStatus {
+        case .saved:
+            jobs[index].failedAssets = []
+            jobs[index].lastErrorMessage = nil
+            HapticFeedback.success()
+        case .partiallySaved:
+            HapticFeedback.warning()
+        case .failed:
+            HapticFeedback.warning()
+        case .idle, .queued, .resolving, .downloading, .saving, .cancelling, .duplicate, .cancelled:
+            break
+        }
+        jobs[index].updatedAt = Date()
+        persistJobs()
+        removeSupersededTerminalJobs(keeping: id)
+    }
+
+    private func errorMessage(for error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
     private func persistJobs() {
@@ -579,7 +785,15 @@ final class DownloadViewModel: ObservableObject {
                 return recentSaves.contains { save in
                     save.savedAt >= job.createdAt && normalizedSource(save.sourceURL) == jobSource
                 }
-            case .idle, .queued, .resolving, .downloading, .saving, .saved:
+            case .partiallySaved:
+                let jobSource = normalizedSource(job.input)
+                return recentSaves.contains { save in
+                    save.id != job.recentSaveID &&
+                        save.savedAt >= job.createdAt &&
+                        save.itemCount >= (job.itemCount ?? .max) &&
+                        normalizedSource(save.sourceURL) == jobSource
+                }
+            case .idle, .queued, .resolving, .downloading, .saving, .cancelling, .saved:
                 return false
             }
         }
@@ -604,34 +818,6 @@ final class DownloadViewModel: ObservableObject {
             value.removeLast()
         }
         return value
-    }
-
-    private func addRecentSave(
-        input: String,
-        resolution: MediaResolution,
-        downloadedMedia: [DownloadedMedia],
-        savedCount: Int
-    ) async {
-        guard savedCount > 0 else {
-            return
-        }
-
-        let previewSource = downloadedMedia.first(where: { $0.kind == .image }) ?? downloadedMedia.first
-        let previewFilename: String?
-        if let previewSource {
-            previewFilename = await thumbnailGenerator.makeThumbnail(for: previewSource.fileURL, kind: previewSource.kind)
-        } else {
-            previewFilename = nil
-        }
-        let save = RecentSave(
-            username: displayUsername(from: resolution, input: input),
-            itemCount: savedCount,
-            contentKind: resolution.contentKind,
-            sourceURL: resolution.sourceURL.absoluteString,
-            previewFilename: previewFilename
-        )
-
-        recentSaves = RecentSaveStore.add(save, to: recentSaves)
     }
 
     private func displayUsername(from resolution: MediaResolution, input: String) -> String {
@@ -698,7 +884,20 @@ final class DownloadViewModel: ObservableObject {
     }
 }
 
-private struct DownloadedMedia {
-    let fileURL: URL
-    let kind: MediaKind
+private enum SaveJobError: LocalizedError {
+    case invalidRestoredAsset
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRestoredAsset:
+            "保存任务中的媒体地址已失效，请重新添加原链接。"
+        }
+    }
+}
+
+private extension Array where Element: Equatable {
+    mutating func removeFirst(_ element: Element) {
+        guard let index = firstIndex(of: element) else { return }
+        remove(at: index)
+    }
 }

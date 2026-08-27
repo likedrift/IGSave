@@ -5,7 +5,7 @@
 
 import Foundation
 
-enum MediaKind: String, Hashable, Sendable {
+enum MediaKind: String, Codable, Hashable, Sendable {
     case image
     case video
     case unknown
@@ -45,6 +45,36 @@ struct MediaAsset: Identifiable, Hashable, Sendable {
     let sourceURL: URL
     let kind: MediaKind
     let suggestedFilename: String
+}
+
+struct SaveAssetDescriptor: Codable, Equatable, Sendable {
+    let sourceURLString: String
+    let kind: MediaKind
+    let suggestedFilename: String
+
+    init(sourceURLString: String, kind: MediaKind, suggestedFilename: String) {
+        self.sourceURLString = sourceURLString
+        self.kind = kind
+        self.suggestedFilename = suggestedFilename
+    }
+
+    init(asset: MediaAsset) {
+        sourceURLString = asset.sourceURL.absoluteString
+        kind = asset.kind
+        suggestedFilename = asset.suggestedFilename
+    }
+
+    var asset: MediaAsset? {
+        guard let sourceURL = URL(string: sourceURLString) else {
+            return nil
+        }
+
+        return MediaAsset(
+            sourceURL: sourceURL,
+            kind: kind,
+            suggestedFilename: suggestedFilename
+        )
+    }
 }
 
 struct MediaCandidate: Hashable, Sendable {

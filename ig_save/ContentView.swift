@@ -652,10 +652,10 @@ struct ContentView: View {
         if job.status.isRunning { return 0 }
         if job.status == .queued { return 1 }
         switch job.status {
-        case .failed, .duplicate: return 2
+        case .failed, .partiallySaved, .duplicate: return 2
         case .cancelled: return 3
         case .saved, .idle: return 4
-        case .queued, .resolving, .downloading, .saving: return 0
+        case .queued, .resolving, .downloading, .saving, .cancelling: return 0
         }
     }
 
@@ -1403,6 +1403,14 @@ private struct SaveQueueProgressView: View {
                 case .queued, .idle, .resolving, .downloading, .saving:
                     Button(cancelTitle, role: .destructive, action: onCancel)
                         .buttonStyle(.glass)
+                case .cancelling:
+                    EmptyView()
+                case .partiallySaved:
+                    Button("重试失败项", action: onRetry)
+                        .buttonStyle(.glassProminent)
+                        .tint(Brand.accent)
+                    Button("移除", action: onRemove)
+                        .buttonStyle(.glass)
                 case .failed, .cancelled:
                     Button("重试", action: onRetry)
                         .buttonStyle(.glassProminent)
@@ -1513,6 +1521,8 @@ private extension SaveStatus {
         switch self {
         case .saved:
             .green
+        case .partiallySaved:
+            .orange
         case .duplicate:
             .orange
         case .failed:
@@ -1523,6 +1533,8 @@ private extension SaveStatus {
             .secondary
         case .resolving, .downloading, .saving:
             Brand.accent
+        case .cancelling:
+            .secondary
         }
     }
 
@@ -1536,8 +1548,10 @@ private extension SaveStatus {
             0.1 + (Double(max(current - 1, 0)) / Double(max(total, 1))) * 0.8
         case let .saving(current, total):
             0.1 + ((Double(current) - 0.5) / Double(max(total, 1))) * 0.8
-        case .saved, .duplicate, .failed:
+        case .saved, .partiallySaved, .duplicate, .failed:
             1
+        case .cancelling:
+            0.95
         case .cancelled:
             0
         }
@@ -1555,8 +1569,12 @@ private extension SaveStatus {
             "正在下载第 \(current) 项，共 \(total) 项"
         case let .saving(current, total):
             "正在写入相册，第 \(current) 项，共 \(total) 项"
+        case .cancelling:
+            "正在安全停止当前任务"
         case let .saved(count):
             "\(count) 个文件已写入系统相册"
+        case let .partiallySaved(saved, failed, message):
+            "已保存 \(saved) 项，\(failed) 项失败。\(message)"
         case let .duplicate(previousSavedAt):
             "上次保存于 \(previousSavedAt.formatted(date: .abbreviated, time: .shortened))"
         case let .failed(message):

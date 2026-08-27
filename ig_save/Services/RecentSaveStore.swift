@@ -36,6 +36,15 @@ enum RecentSaveStore {
         return nextSaves
     }
 
+    static func upsert(_ save: RecentSave, in saves: [RecentSave]) -> [RecentSave] {
+        var nextSaves = saves.filter { $0.id != save.id }
+        nextSaves.insert(save, at: 0)
+        nextSaves = Array(nextSaves.prefix(maxCount))
+        persist(nextSaves)
+        pruneThumbnails(keeping: nextSaves)
+        return nextSaves
+    }
+
     static func previousSave(for sourceURL: String) -> RecentSave? {
         let key = normalizedSourceURL(sourceURL)
         return load().first { normalizedSourceURL($0.sourceURL) == key }

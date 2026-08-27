@@ -6,13 +6,22 @@ enum SaveJobStore {
     static func load() -> [SaveJob] {
         guard
             let data = try? Data(contentsOf: storageURL()),
-            var jobs = try? JSONDecoder().decode([SaveJob].self, from: data)
+            let jobs = try? JSONDecoder().decode([SaveJob].self, from: data)
         else {
             return []
         }
 
+        let restoredJobs = restored(jobs)
+        persist(restoredJobs)
+        return restoredJobs
+    }
+
+    static func restored(_ storedJobs: [SaveJob], now: Date = Date()) -> [SaveJob] {
+        var jobs = storedJobs
         for index in jobs.indices where jobs[index].status.isRunning || jobs[index].status == .idle {
             jobs[index].status = .queued
+            jobs[index].attemptID = nil
+            jobs[index].updatedAt = now
         }
 
         jobs.removeAll { job in
@@ -20,9 +29,7 @@ enum SaveJobStore {
             return false
         }
 
-        let restoredJobs = Array(jobs.prefix(maxCount))
-        persist(restoredJobs)
-        return restoredJobs
+        return Array(jobs.prefix(maxCount))
     }
 
     static func persist(_ jobs: [SaveJob]) {
