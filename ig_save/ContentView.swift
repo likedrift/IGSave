@@ -853,7 +853,7 @@ private struct SettingsView: View {
                 Section("网络") {
                     Toggle("允许蜂窝网络下载", isOn: $allowsCellularDownloads)
                     if !allowsCellularDownloads {
-                        Text("使用移动数据时任务会失败并保留在列表中，可连接 Wi‑Fi 后重试。")
+                        Text("使用移动数据时任务会等待 Wi‑Fi，切换网络后会自动继续。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

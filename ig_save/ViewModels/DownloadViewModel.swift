@@ -524,52 +524,13 @@ final class DownloadViewModel: ObservableObject {
                 return
             }
 
-            for (offset, asset) in assets.enumerated() {
-                try Task.checkCancellation()
-                let current = offset + 1
-                update(
-                    jobID,
-                    status: .downloading(current: current, total: assets.count),
-                    attemptID: attemptID
-                )
-
-                do {
-                    let fileURL = try await downloader.download(
-                        asset,
-                        allowsCellularAccess: AppPreferences.allowsCellularDownloads
-                    )
-
-                    update(
-                        jobID,
-                        status: .saving(current: current, total: assets.count),
-                        attemptID: attemptID
-                    )
-                    try await saver.save(
-                        fileURL: fileURL,
-                        kind: asset.kind,
-                        albumName: AppPreferences.usesDedicatedAlbum ? AppPreferences.dedicatedAlbumName : nil
-                    )
-
-                    await recordAssetSuccess(
-                        jobID,
-                        attemptID: attemptID,
-                        asset: asset,
-                        fileURL: fileURL,
-                        input: input,
-                        resolution: resolution
-                    )
-                    try Task.checkCancellation()
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    recordAssetFailure(
-                        jobID,
-                        attemptID: attemptID,
-                        asset: asset,
-                        message: errorMessage(for: error)
-                    )
-                }
-            }
+            try await downloadAndSaveAssets(
+                assets,
+                jobID: jobID,
+                attemptID: attemptID,
+                input: input,
+                resolution: resolution
+            )
 
             finalize(jobID, attemptID: attemptID)
             MediaDownloader.cleanCache()
@@ -579,6 +540,129 @@ final class DownloadViewModel: ObservableObject {
             let message = errorMessage(for: error)
             setAttemptError(jobID, attemptID: attemptID, message: message)
             finalize(jobID, attemptID: attemptID, fallbackError: message)
+        }
+    }
+
+    private func downloadAndSaveAssets(
+        _ assets: [MediaAsset],
+        jobID: UUID,
+        attemptID: UUID,
+        input: String,
+        resolution: MediaResolution
+    ) async throws {
+        let maximumConcurrentDownloads = min(2, assets.count)
+        let allowsCellularDownloads = AppPreferences.allowsCellularDownloads
+        var nextAssetIndex = maximumConcurrentDownloads
+        var completedDownloadCount = 0
+
+        update(
+            jobID,
+            status: .downloading(current: 1, total: assets.count),
+            attemptID: attemptID
+        )
+
+        try await withThrowingTaskGroup(of: AssetDownloadOutcome.self) { group in
+            for asset in assets.prefix(maximumConcurrentDownloads) {
+                group.addTask { [downloader] in
+                    try await Self.downloadOutcome(
+                        asset: asset,
+                        jobID: jobID,
+                        allowsCellularAccess: allowsCellularDownloads,
+                        downloader: downloader
+                    )
+                }
+            }
+
+            while let outcome = try await group.next() {
+                try Task.checkCancellation()
+                completedDownloadCount += 1
+
+                switch outcome {
+                case let .downloaded(asset, fileURL):
+                    update(
+                        jobID,
+                        status: .saving(current: completedDownloadCount, total: assets.count),
+                        attemptID: attemptID
+                    )
+
+                    do {
+                        try await saver.save(
+                            fileURL: fileURL,
+                            kind: asset.kind,
+                            albumName: AppPreferences.usesDedicatedAlbum ? AppPreferences.dedicatedAlbumName : nil
+                        )
+                        await recordAssetSuccess(
+                            jobID,
+                            attemptID: attemptID,
+                            asset: asset,
+                            fileURL: fileURL,
+                            input: input,
+                            resolution: resolution
+                        )
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        recordAssetFailure(
+                            jobID,
+                            attemptID: attemptID,
+                            asset: asset,
+                            message: errorMessage(for: error)
+                        )
+                    }
+                case let .failed(asset, message):
+                    recordAssetFailure(
+                        jobID,
+                        attemptID: attemptID,
+                        asset: asset,
+                        message: message
+                    )
+                }
+
+                if nextAssetIndex < assets.count {
+                    let nextAsset = assets[nextAssetIndex]
+                    nextAssetIndex += 1
+                    group.addTask { [downloader] in
+                        try await Self.downloadOutcome(
+                            asset: nextAsset,
+                            jobID: jobID,
+                            allowsCellularAccess: allowsCellularDownloads,
+                            downloader: downloader
+                        )
+                    }
+                }
+
+                if completedDownloadCount < assets.count {
+                    update(
+                        jobID,
+                        status: .downloading(
+                            current: min(completedDownloadCount + 1, assets.count),
+                            total: assets.count
+                        ),
+                        attemptID: attemptID
+                    )
+                }
+            }
+        }
+    }
+
+    nonisolated private static func downloadOutcome(
+        asset: MediaAsset,
+        jobID: UUID,
+        allowsCellularAccess: Bool,
+        downloader: MediaDownloader
+    ) async throws -> AssetDownloadOutcome {
+        do {
+            let fileURL = try await downloader.download(
+                asset,
+                jobID: jobID,
+                allowsCellularAccess: allowsCellularAccess
+            )
+            return .downloaded(asset: asset, fileURL: fileURL)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return .failed(asset: asset, message: message)
         }
     }
 
@@ -893,6 +977,11 @@ private enum SaveJobError: LocalizedError {
             "保存任务中的媒体地址已失效，请重新添加原链接。"
         }
     }
+}
+
+private enum AssetDownloadOutcome: Sendable {
+    case downloaded(asset: MediaAsset, fileURL: URL)
+    case failed(asset: MediaAsset, message: String)
 }
 
 private extension Array where Element: Equatable {
