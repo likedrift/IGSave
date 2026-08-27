@@ -1,4 +1,4 @@
-# IG Save Development Progress
+# IGSave Development Progress
 
 ## Goal
 
@@ -172,6 +172,16 @@ Build a personal-use iOS app that accepts a pasted Instagram link and saves the 
 - Updated media downloads to honor the cellular-data preference.
 - Migrated video thumbnail generation to the current asynchronous AVFoundation APIs.
 - Verified App Intents metadata extraction and clean Debug/Release device SDK builds.
+
+### 2026-08-26 - Share Reliability And Unified UI Refinement
+
+- Added a shared App Group handoff so Instagram's Share Extension can reliably queue links even when the main app is not already running.
+- Redesigned Share Extension feedback with a compact material confirmation card, success/error haptics, and a readable completion state before dismissal.
+- Standardized the product and all user-facing references on the `IGSave` name.
+- Simplified the home screen and rebuilt active task cards around compact thumbnails, friendly account/content labels, Liquid Glass actions, batch progress, and automatic removal after success.
+- Removed raw source URLs from tasks and recent-save cards; recent saves now use date groups, localized single-line times, compact filters, and a dedicated detail sheet.
+- Added bilingual-safe Chinese empty states, consistent Reel/Reels naming, meaningful haptic feedback, batch summaries, and optional local completion notifications.
+- Verified clean Debug and Release iOS builds and performed simulator visual QA for the save queue and recent-save layouts.
 
 ## Next Tasks
 

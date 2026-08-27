@@ -5,13 +5,15 @@ enum AppPreferences {
     static let previewBeforeSavingKey = "preview-before-saving"
     static let duplicateProtectionKey = "duplicate-protection"
     static let cellularDownloadsKey = "allow-cellular-downloads"
-    static let dedicatedAlbumName = "IG Save"
+    static let completionNotificationsKey = "completion-notifications"
+    static let dedicatedAlbumName = "IGSave"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             previewBeforeSavingKey: true,
             duplicateProtectionKey: true,
-            cellularDownloadsKey: true
+            cellularDownloadsKey: true,
+            completionNotificationsKey: true
         ])
     }
 
@@ -29,5 +31,9 @@ enum AppPreferences {
 
     static var allowsCellularDownloads: Bool {
         UserDefaults.standard.bool(forKey: cellularDownloadsKey)
+    }
+
+    static var sendsCompletionNotifications: Bool {
+        UserDefaults.standard.bool(forKey: completionNotificationsKey)
     }
 }

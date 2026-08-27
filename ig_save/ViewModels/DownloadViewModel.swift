@@ -119,6 +119,7 @@ final class DownloadViewModel: ObservableObject {
         } else {
             selectedPreviewAssetIDs.insert(asset.id)
         }
+        HapticFeedback.selection()
     }
 
     func confirmPreviewSave() {
@@ -204,6 +205,7 @@ final class DownloadViewModel: ObservableObject {
             ))
         }
         FavoriteProfileStore.persist(favoriteProfiles)
+        HapticFeedback.selection()
     }
 
     func selectFavoriteProfile(_ favorite: FavoriteProfile) {
@@ -222,6 +224,7 @@ final class DownloadViewModel: ObservableObject {
         } else {
             selectedProfilePostIDs.insert(post.id)
         }
+        HapticFeedback.selection()
     }
 
     func toggleAllProfilePosts(in posts: [InstagramProfilePost]) {
@@ -236,6 +239,7 @@ final class DownloadViewModel: ObservableObject {
         } else {
             selectedProfilePostIDs.formUnion(postIDs)
         }
+        HapticFeedback.selection()
     }
 
     func saveSelectedProfilePosts() {
@@ -246,11 +250,13 @@ final class DownloadViewModel: ObservableObject {
             return
         }
 
+        let batchID = selectedPosts.count > 1 ? UUID() : nil
         for post in selectedPosts {
-            enqueue(input: post.url.absoluteString)
+            enqueue(input: post.url.absoluteString, batchID: batchID)
         }
 
         selectedProfilePostIDs = []
+        HapticFeedback.selection()
     }
 
     func showInstagramLogin() {
@@ -283,6 +289,7 @@ final class DownloadViewModel: ObservableObject {
 
     func deleteRecentSave(_ save: RecentSave) {
         recentSaves = RecentSaveStore.remove(save, from: recentSaves)
+        HapticFeedback.selection()
     }
 
     func clearRecentSaves() {
@@ -304,6 +311,7 @@ final class DownloadViewModel: ObservableObject {
 
     func resumePendingJobs() {
         MediaDownloader.cleanCache()
+        removeSupersededTerminalJobs()
         consumePendingImports()
         ensureQueueProcessing()
     }
@@ -323,6 +331,7 @@ final class DownloadViewModel: ObservableObject {
         jobs[index].allowsDuplicate = allowDuplicate || jobs[index].allowsDuplicate
         persistJobs()
         ensureQueueProcessing()
+        HapticFeedback.selection()
     }
 
     func cancel(_ job: SaveJob) {
@@ -338,6 +347,30 @@ final class DownloadViewModel: ObservableObject {
         jobs[index].status = .cancelled
         persistJobs()
         isWorking = jobs.contains { $0.status.isRunning }
+
+        Task {
+            await Task.yield()
+            ensureQueueProcessing()
+        }
+    }
+
+    func cancelBatch(containing job: SaveJob) {
+        guard let batchID = job.batchID else {
+            cancel(job)
+            return
+        }
+
+        let hasRunningJob = jobs.contains { $0.batchID == batchID && $0.status.isRunning }
+        if hasRunningJob {
+            queueWorker?.cancel()
+            queueWorker = nil
+        }
+
+        for index in jobs.indices where jobs[index].batchID == batchID && !jobs[index].status.isTerminal {
+            jobs[index].status = .cancelled
+        }
+        persistJobs()
+        HapticFeedback.warning()
 
         Task {
             await Task.yield()
@@ -362,15 +395,17 @@ final class DownloadViewModel: ObservableObject {
     private func enqueue(
         input: String,
         allowsDuplicate: Bool = false,
-        preparedResolution: MediaResolution? = nil
+        preparedResolution: MediaResolution? = nil,
+        batchID: UUID? = nil
     ) {
-        let job = SaveJob(input: input, allowsDuplicate: allowsDuplicate)
+        let job = SaveJob(input: input, allowsDuplicate: allowsDuplicate, batchID: batchID)
         jobs.insert(job, at: 0)
         if let preparedResolution {
             preparedResolutions[job.id] = preparedResolution
         }
         persistJobs()
         ensureQueueProcessing()
+        HapticFeedback.selection()
     }
 
     private func ensureQueueProcessing() {
@@ -385,12 +420,40 @@ final class DownloadViewModel: ObservableObject {
 
     private func processQueue() async {
         isWorking = true
+        var processedJobIDs: Set<UUID> = []
 
         while !Task.isCancelled,
               let job = jobs
                 .filter({ $0.status == .queued })
                 .min(by: { $0.createdAt < $1.createdAt }) {
             await run(jobID: job.id)
+            processedJobIDs.insert(job.id)
+        }
+
+        if !Task.isCancelled {
+            let processedJobs = jobs.filter { processedJobIDs.contains($0.id) }
+            let successCount = processedJobs.filter {
+                if case .saved = $0.status { return true }
+                return false
+            }.count
+            let failureCount = processedJobs.filter {
+                switch $0.status {
+                case .failed, .duplicate: true
+                default: false
+                }
+            }.count
+            await NotificationService.notifySaveCompletion(
+                successCount: successCount,
+                failureCount: failureCount
+            )
+
+            try? await Task.sleep(for: .seconds(2))
+            jobs.removeAll { job in
+                guard processedJobIDs.contains(job.id) else { return false }
+                if case .saved = job.status { return true }
+                return false
+            }
+            persistJobs()
         }
 
         queueWorker = nil
@@ -418,10 +481,13 @@ final class DownloadViewModel: ObservableObject {
                 resolution = try await resolveMedia(input)
             }
 
+            updateMetadata(jobID, resolution: resolution)
+
             if AppPreferences.protectsAgainstDuplicates,
                !job.allowsDuplicate,
                let previousSave = RecentSaveStore.previousSave(for: resolution.sourceURL.absoluteString) {
                 update(jobID, status: .duplicate(previousSavedAt: previousSave.savedAt))
+                HapticFeedback.warning()
                 return
             }
 
@@ -452,6 +518,8 @@ final class DownloadViewModel: ObservableObject {
 
             await addRecentSave(input: input, resolution: resolution, downloadedMedia: downloadedMedia, savedCount: savedCount)
             update(jobID, status: .saved(count: savedCount))
+            removeSupersededTerminalJobs(keeping: jobID)
+            HapticFeedback.success()
             MediaDownloader.cleanCache()
         } catch is CancellationError {
             update(jobID, status: .cancelled)
@@ -483,8 +551,59 @@ final class DownloadViewModel: ObservableObject {
         persistJobs()
     }
 
+    private func updateMetadata(_ id: UUID, resolution: MediaResolution) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        jobs[index].username = resolution.username
+        jobs[index].contentKind = resolution.contentKind
+        jobs[index].itemCount = resolution.assets.count
+        jobs[index].previewURLString = resolution.assets.first?.sourceURL.absoluteString
+        persistJobs()
+    }
+
     private func persistJobs() {
         SaveJobStore.persist(jobs)
+    }
+
+    private func removeSupersededTerminalJobs(keeping jobID: UUID? = nil) {
+        let previousCount = jobs.count
+
+        jobs.removeAll { job in
+            guard job.id != jobID else { return false }
+
+            switch job.status {
+            case .failed, .cancelled, .duplicate:
+                let jobSource = normalizedSource(job.input)
+                return recentSaves.contains { save in
+                    save.savedAt >= job.createdAt && normalizedSource(save.sourceURL) == jobSource
+                }
+            case .idle, .queued, .resolving, .downloading, .saving, .saved:
+                return false
+            }
+        }
+
+        if jobs.count != previousCount {
+            persistJobs()
+        }
+    }
+
+    private func normalizedSource(_ rawValue: String) -> String {
+        guard let url = firstURL(in: rawValue),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else {
+            return rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+
+        components.query = nil
+        components.fragment = nil
+        components.host = components.host?.lowercased()
+        var value = components.string?.lowercased() ?? url.absoluteString.lowercased()
+        while value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
     }
 
     private func addRecentSave(
@@ -535,11 +654,21 @@ final class DownloadViewModel: ObservableObject {
     }
 
     private func isStoryInput(_ input: String) -> Bool {
-        guard let url = URL(string: input) else {
+        guard let url = firstURL(in: input) else {
             return input.contains("/stories/")
         }
 
-        return url.pathComponents.contains("stories")
+        return url.pathComponents.contains { $0.caseInsensitiveCompare("stories") == .orderedSame }
+    }
+
+    private func firstURL(in text: String) -> URL? {
+        let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+
+        return detector?
+            .matches(in: text, options: [], range: range)
+            .compactMap(\.url)
+            .first
     }
 
     private func normalizedProfileUsername(_ rawValue: String) -> String? {

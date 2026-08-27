@@ -11,6 +11,7 @@ enum MediaResolverError: LocalizedError, Sendable {
     case invalidResponse
     case noMediaFound
     case storyLoginRequired
+    case storyMediaUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -21,9 +22,11 @@ enum MediaResolverError: LocalizedError, Sendable {
         case .invalidResponse:
             "页面响应无效。"
         case .noMediaFound:
-            "没有在页面里找到可直接保存的公开媒体。公开帖子通常可用，快拍或私密内容需要后续单独设计。"
+            "没有找到可保存的媒体。请确认链接仍然有效，并且当前 Instagram 账号有查看权限。"
         case .storyLoginRequired:
             "快拍需要先在 App 内登录 Instagram。登录后会使用你自己的本地会话解析可访问的快拍媒体。"
+        case .storyMediaUnavailable:
+            "没有找到这条快拍。它可能已经过期、被删除，或当前 Instagram 账号没有查看权限。"
         }
     }
 }

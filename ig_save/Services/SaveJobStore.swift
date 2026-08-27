@@ -15,7 +15,14 @@ enum SaveJobStore {
             jobs[index].status = .queued
         }
 
-        return Array(jobs.prefix(maxCount))
+        jobs.removeAll { job in
+            if case .saved = job.status { return true }
+            return false
+        }
+
+        let restoredJobs = Array(jobs.prefix(maxCount))
+        persist(restoredJobs)
+        return restoredJobs
     }
 
     static func persist(_ jobs: [SaveJob]) {

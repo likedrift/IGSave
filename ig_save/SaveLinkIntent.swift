@@ -2,7 +2,7 @@ import AppIntents
 
 struct SaveInstagramLinkIntent: AppIntent {
     static let title: LocalizedStringResource = "保存 Instagram 链接"
-    static let description = IntentDescription("把帖子、Reel 或快拍链接加入 IG Save 保存队列。")
+    static let description = IntentDescription("把帖子、Reel 或快拍链接加入 IGSave 保存队列。")
     static let openAppWhenRun = true
 
     @Parameter(title: "Instagram 链接")
@@ -11,7 +11,7 @@ struct SaveInstagramLinkIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         PendingImportStore.add(link)
-        return .result(dialog: "链接已加入 IG Save。")
+        return .result(dialog: "链接已加入 IGSave。")
     }
 }
 

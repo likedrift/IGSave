@@ -8,7 +8,7 @@
 import SwiftUI
 
 @main
-struct ig_saveApp: App {
+struct IGSaveApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

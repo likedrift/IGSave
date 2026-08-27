@@ -17,11 +17,11 @@ struct ThumbnailGenerator: Sendable {
             return nil
         }
 
-        let thumbnail = squareThumbnail(from: image, side: 240)
+        let thumbnail = resizedPreview(from: image, maxDimension: 900)
         let filename = "\(UUID().uuidString).jpg"
 
         guard
-            let data = thumbnail.jpegData(compressionQuality: 0.82),
+            let data = thumbnail.jpegData(compressionQuality: 0.86),
             let directory = try? RecentSaveStore.previewsDirectory()
         else {
             return nil
@@ -67,18 +67,21 @@ struct ThumbnailGenerator: Sendable {
         }
     }
 
-    private func squareThumbnail(from image: UIImage, side: CGFloat) -> UIImage {
+    private func resizedPreview(from image: UIImage, maxDimension: CGFloat) -> UIImage {
         let sourceSize = image.size
-        let scale = max(side / sourceSize.width, side / sourceSize.height)
-        let scaledSize = CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
-        let origin = CGPoint(
-            x: (side - scaledSize.width) / 2,
-            y: (side - scaledSize.height) / 2
+        let largestSide = max(sourceSize.width, sourceSize.height)
+        let scale = min(maxDimension / largestSide, 1)
+        let targetSize = CGSize(
+            width: max(1, sourceSize.width * scale),
+            height: max(1, sourceSize.height * scale)
         )
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: side, height: side))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
 
         return renderer.image { _ in
-            image.draw(in: CGRect(origin: origin, size: scaledSize))
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
         }
     }
     #endif

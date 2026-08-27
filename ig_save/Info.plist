@@ -8,6 +8,8 @@
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleDisplayName</key>
+	<string>IGSave</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -36,7 +38,7 @@
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>用于把下载的图片和视频保存到系统相册。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>用于把保存的内容整理到 IG Save 相册。</string>
+	<string>用于把保存的内容整理到 IGSave 相册。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

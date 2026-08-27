@@ -64,18 +64,33 @@ struct SaveJob: Identifiable, Equatable, Sendable, Codable {
     let createdAt: Date
     var status: SaveStatus
     var allowsDuplicate: Bool
+    var username: String?
+    var contentKind: InstagramContentKind?
+    var itemCount: Int?
+    var previewURLString: String?
+    var batchID: UUID?
 
     init(
         id: UUID = UUID(),
         input: String,
         createdAt: Date = Date(),
         status: SaveStatus = .queued,
-        allowsDuplicate: Bool = false
+        allowsDuplicate: Bool = false,
+        username: String? = nil,
+        contentKind: InstagramContentKind? = nil,
+        itemCount: Int? = nil,
+        previewURLString: String? = nil,
+        batchID: UUID? = nil
     ) {
         self.id = id
         self.input = input
         self.createdAt = createdAt
         self.status = status
         self.allowsDuplicate = allowsDuplicate
+        self.username = username
+        self.contentKind = contentKind
+        self.itemCount = itemCount
+        self.previewURLString = previewURLString
+        self.batchID = batchID
     }
 }

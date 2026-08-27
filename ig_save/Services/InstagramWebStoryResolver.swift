@@ -25,12 +25,14 @@ final class InstagramWebStoryResolver: NSObject {
             frame: CGRect(x: 0, y: 0, width: 390, height: 844),
             configuration: configuration()
         )
+        let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+        webView.customUserAgent = userAgent
         let loadDelegate = StoryLoadDelegate()
         webView.navigationDelegate = loadDelegate
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 35
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
 
         let loadTask = Task {
             try await loadDelegate.waitForFinish(timeout: 24)
@@ -38,13 +40,40 @@ final class InstagramWebStoryResolver: NSObject {
 
         webView.load(request)
         try await loadTask.value
-        try await Task.sleep(for: .seconds(3))
+        try await checkLoadedPage(in: webView)
 
-        let candidates = try await extractCandidates(from: webView)
-        let uniqueCandidates = deduplicated(candidates)
+        guard
+            let username = storyUsername(from: url),
+            let storyID = storyID(from: url)
+        else {
+            throw MediaResolverError.noURL
+        }
+
+        await triggerStoryRequests(in: webView, username: username)
+
+        var uniqueCandidates: [MediaCandidate] = []
+        for attempt in 0..<12 {
+            try await Task.sleep(for: .seconds(attempt == 0 ? 2 : 1))
+            try await checkLoadedPage(in: webView)
+
+            let candidates = try await extractCandidates(
+                from: webView,
+                storyID: storyID,
+                username: username
+            )
+            uniqueCandidates = deduplicated(candidates)
+
+            if !uniqueCandidates.isEmpty {
+                break
+            }
+
+            if await storyRequestsFinished(in: webView), attempt >= 4 {
+                break
+            }
+        }
 
         guard !uniqueCandidates.isEmpty else {
-            throw MediaResolverError.noMediaFound
+            throw MediaResolverError.storyMediaUnavailable
         }
 
         let assets = uniqueCandidates.enumerated().map { offset, candidate in
@@ -57,7 +86,7 @@ final class InstagramWebStoryResolver: NSObject {
 
         return MediaResolution(
             assets: assets,
-            username: storyUsername(from: url),
+            username: username,
             contentKind: .story,
             sourceURL: url
         )
@@ -66,6 +95,14 @@ final class InstagramWebStoryResolver: NSObject {
     private func configuration() -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: Self.networkCaptureScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
         #if os(iOS)
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
@@ -74,13 +111,129 @@ final class InstagramWebStoryResolver: NSObject {
         return configuration
     }
 
-    private func extractCandidates(from webView: WKWebView) async throws -> [MediaCandidate] {
+    private static let networkCaptureScript = #"""
+    (() => {
+      if (window.__igSaveStoryCaptureInstalled) return;
+      window.__igSaveStoryCaptureInstalled = true;
+      window.__igSaveStoryResponses = [];
+
+      const remember = (url, body) => {
+        if (typeof body !== 'string' || body.length < 2 || body.length > 8000000) return;
+        const target = String(url || '');
+        if (!/instagram\.com/i.test(target) && target.startsWith('http')) return;
+        const entries = window.__igSaveStoryResponses;
+        entries.push({ url: target, body });
+        if (entries.length > 24) entries.splice(0, entries.length - 24);
+      };
+
+      const originalFetch = window.fetch;
+      if (typeof originalFetch === 'function') {
+        window.fetch = function(...args) {
+          return originalFetch.apply(this, args).then((response) => {
+            try {
+              response.clone().text().then((body) => remember(response.url, body)).catch(() => {});
+            } catch (_) {}
+            return response;
+          });
+        };
+      }
+
+      const originalOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        this.__igSaveStoryURL = String(url || '');
+        this.addEventListener('load', function() {
+          try {
+            if (!this.responseType || this.responseType === 'text') {
+              remember(this.responseURL || this.__igSaveStoryURL, this.responseText);
+            } else if (this.responseType === 'json') {
+              remember(this.responseURL || this.__igSaveStoryURL, JSON.stringify(this.response));
+            }
+          } catch (_) {}
+        });
+        return originalOpen.call(this, method, url, ...rest);
+      };
+    })();
+    """#
+
+    private func triggerStoryRequests(in webView: WKWebView, username: String) async {
+        let escapedUsername = username
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
         let script = """
         (() => {
+          const username = '\(escapedUsername)';
+          window.__igSaveStoryRequestsFinished = false;
+          const headers = {
+            'Accept': '*/*',
+            'X-IG-App-ID': '936619743392459',
+            'X-Requested-With': 'XMLHttpRequest'
+          };
+
+          const loadStory = async () => {
+            const profileResponse = await fetch(
+              `/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
+              { credentials: 'include', headers }
+            );
+            const profileJSON = await profileResponse.clone().json();
+            const userID = profileJSON?.data?.user?.id || profileJSON?.data?.user?.pk;
+            if (!userID) return;
+
+            const query = new URLSearchParams({ reel_ids: String(userID) });
+            await Promise.allSettled([
+              fetch(`/api/v1/feed/reels_media/?${query}`, { credentials: 'include', headers }),
+              fetch(`/api/v1/feed/user/${encodeURIComponent(userID)}/story/`, { credentials: 'include', headers })
+            ]);
+          };
+
+          loadStory()
+            .catch(() => {})
+            .finally(() => { window.__igSaveStoryRequestsFinished = true; });
+        })();
+        """
+        _ = try? await evaluateJavaScript(script, in: webView)
+    }
+
+    private func storyRequestsFinished(in webView: WKWebView) async -> Bool {
+        (try? await evaluateJavaScript(
+            "window.__igSaveStoryRequestsFinished === true",
+            in: webView
+        ) as? Bool) == true
+    }
+
+    private func checkLoadedPage(in webView: WKWebView) async throws {
+        guard let rawURL = try await evaluateJavaScript("location.href", in: webView) as? String else {
+            throw MediaResolverError.invalidResponse
+        }
+
+        let lowercasedURL = rawURL.lowercased()
+        if lowercasedURL.contains("/accounts/login") {
+            throw MediaResolverError.storyLoginRequired
+        }
+
+        if lowercasedURL.contains("/challenge/") || lowercasedURL.contains("/accounts/suspended") {
+            throw MediaResolverError.invalidResponse
+        }
+    }
+
+    private func extractCandidates(
+        from webView: WKWebView,
+        storyID: String,
+        username: String
+    ) async throws -> [MediaCandidate] {
+        let escapedStoryID = storyID
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        let escapedUsername = username
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        let script = """
+        (() => {
+          const targetStoryID = '\(escapedStoryID)';
+          const targetUsername = '\(escapedUsername)'.toLowerCase();
           const items = [];
-          const push = (url, kind, score, width, height) => {
+          const push = (url, kind, score, width, height, scoped = false) => {
             if (!url || typeof url !== 'string') return;
-            items.push({ url, kind, score, width: width || 0, height: height || 0 });
+            items.push({ url, kind, score, width: width || 0, height: height || 0, scoped });
           };
 
           document.querySelectorAll('video').forEach((video) => {
@@ -116,6 +269,53 @@ final class InstagramWebStoryResolver: NSObject {
             }
           });
 
+          const imageCandidates = (node) => {
+            const candidates = node?.image_versions2?.candidates;
+            if (Array.isArray(candidates) && candidates.length) {
+              const best = candidates
+                .filter((candidate) => candidate && typeof candidate.url === 'string')
+                .sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)))[0];
+              push(best?.url, 'image', 900, best?.width, best?.height, true);
+            } else {
+              push(node?.display_url, 'image', 850, node?.original_width, node?.original_height, true);
+            }
+          };
+
+          const storyMediaFromNode = (node, inheritedUsername = null) => {
+            if (!node || typeof node !== 'object') return;
+            const nodeUsername = node.user?.username || node.owner?.username ||
+              (typeof node.username === 'string' ? node.username : null) || inheritedUsername;
+            const rawID = node.pk || node.id;
+            const nodeID = String(rawID || '').split('_')[0];
+
+            if (nodeID === targetStoryID && (!nodeUsername || nodeUsername.toLowerCase() === targetUsername)) {
+              const videos = node.video_versions;
+              if (Array.isArray(videos) && videos.length) {
+                const best = videos
+                  .filter((video) => video && typeof video.url === 'string')
+                  .sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)))[0];
+                push(best?.url, 'video', 1000, best?.width, best?.height, true);
+              } else if (node.video_url) {
+                push(node.video_url, 'video', 980, node.original_width, node.original_height, true);
+              } else {
+                imageCandidates(node);
+              }
+            }
+
+            if (Array.isArray(node)) {
+              node.forEach((child) => storyMediaFromNode(child, nodeUsername));
+            } else {
+              Object.values(node).forEach((child) => storyMediaFromNode(child, nodeUsername));
+            }
+          };
+
+          const captured = Array.isArray(window.__igSaveStoryResponses)
+            ? window.__igSaveStoryResponses
+            : [];
+          captured.forEach((entry) => {
+            try { storyMediaFromNode(JSON.parse(entry.body || '')); } catch (_) {}
+          });
+
           return JSON.stringify(items);
         })();
         """
@@ -128,7 +328,8 @@ final class InstagramWebStoryResolver: NSObject {
             return []
         }
 
-        return objects.compactMap(candidate(from:))
+        let scopedObjects = objects.filter { ($0["scoped"] as? Bool) == true }
+        return (scopedObjects.isEmpty ? objects : scopedObjects).compactMap(candidate(from:))
     }
 
     private func evaluateJavaScript(_ script: String, in webView: WKWebView) async throws -> Any? {
@@ -245,6 +446,22 @@ final class InstagramWebStoryResolver: NSObject {
         }
 
         return components[index + 1]
+    }
+
+    private func storyID(from url: URL) -> String? {
+        let components = url.pathComponents.filter { $0 != "/" }
+
+        guard
+            let index = components.firstIndex(of: "stories"),
+            components.indices.contains(index + 2)
+        else {
+            return nil
+        }
+
+        return components[index + 2]
+            .split(separator: "_")
+            .first
+            .map(String.init)
     }
 
     private func suggestedFilename(for url: URL, kind: MediaKind, index: Int) -> String {

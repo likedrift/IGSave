@@ -17,8 +17,10 @@ struct ContentView: View {
     @State private var recentContentFilter: RecentContentFilter = .all
     @State private var recentSearchText = ""
     @State private var isShowingSettings = false
+    @State private var selectedRecentSave: RecentSave?
     @FocusState private var isInputFocused: Bool
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -41,6 +43,11 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .igSavePendingImport)) { _ in
             viewModel.consumePendingImports()
             selectedTab = .save
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                viewModel.consumePendingImports()
+            }
         }
         .task {
             await viewModel.refreshInstagramSessionStatus()
@@ -83,6 +90,23 @@ struct ContentView: View {
                 onOpenSettings: viewModel.openAppSettings
             )
         }
+        .sheet(item: $selectedRecentSave) { save in
+            RecentSaveDetailView(
+                save: save,
+                onOpen: {
+                    if let url = URL(string: save.sourceURL) { openURL(url) }
+                },
+                onCopy: { viewModel.copyRecentLink(save) },
+                onSaveAgain: {
+                    viewModel.saveAgain(save)
+                    selectedRecentSave = nil
+                },
+                onDelete: {
+                    viewModel.deleteRecentSave(save)
+                    selectedRecentSave = nil
+                }
+            )
+        }
     }
 
     private var saveNavigation: some View {
@@ -92,11 +116,9 @@ struct ContentView: View {
 
                 ScrollView {
                     VStack(spacing: 24) {
-                        saveHero
                         linkComposer
                         profilePostsSection
                         taskQueueSection
-                        supportCard
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 10)
@@ -105,7 +127,7 @@ struct ContentView: View {
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
             }
-            .navigationTitle("IG Save")
+            .navigationTitle("IGSave")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -149,20 +171,37 @@ struct ContentView: View {
                         .padding(.horizontal, 20)
 
                         if filteredRecentSaves.isEmpty {
-                            ContentUnavailableView.search(text: recentSearchText)
+                            ContentUnavailableView(
+                                "没有匹配的记录",
+                                systemImage: "magnifyingglass",
+                                description: Text("试试其他账号名称或内容类型。")
+                            )
                         } else {
                             ScrollView {
-                                LazyVStack(spacing: 14) {
-                                    ForEach(filteredRecentSaves) { save in
-                                        RecentSaveRow(
-                                            save: save,
-                                            onOpen: {
-                                                if let url = URL(string: save.sourceURL) { openURL(url) }
-                                            },
-                                            onCopy: { viewModel.copyRecentLink(save) },
-                                            onSaveAgain: { viewModel.saveAgain(save) },
-                                            onDelete: { viewModel.deleteRecentSave(save) }
-                                        )
+                                LazyVStack(alignment: .leading, spacing: 12, pinnedViews: [.sectionHeaders]) {
+                                    ForEach(groupedRecentSaves) { group in
+                                        Section {
+                                            ForEach(group.saves) { save in
+                                                RecentSaveRow(
+                                                    save: save,
+                                                    onSelect: { selectedRecentSave = save },
+                                                    onOpen: {
+                                                        if let url = URL(string: save.sourceURL) { openURL(url) }
+                                                    },
+                                                    onCopy: { viewModel.copyRecentLink(save) },
+                                                    onSaveAgain: { viewModel.saveAgain(save) },
+                                                    onDelete: { viewModel.deleteRecentSave(save) }
+                                                )
+                                            }
+                                        } header: {
+                                            Text(group.title)
+                                                .font(.caption.weight(.bold))
+                                                .foregroundStyle(.secondary)
+                                                .textCase(.uppercase)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .padding(.vertical, 6)
+                                                .background(Color(uiColor: .systemGroupedBackground).opacity(0.94))
+                                        }
                                     }
                                 }
                                 .padding(.horizontal, 20)
@@ -175,7 +214,10 @@ struct ContentView: View {
             }
             .navigationTitle("最近保存")
             .navigationBarTitleDisplayMode(.large)
-            .searchable(text: $recentSearchText, prompt: "搜索账号或链接")
+            .recentSearchable(
+                enabled: viewModel.recentSaves.count >= 8,
+                text: $recentSearchText
+            )
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -203,42 +245,17 @@ struct ContentView: View {
         }
     }
 
-    private var saveHero: some View {
-        HStack(spacing: 16) {
-            Image(systemName: "square.and.arrow.down.fill")
-                .font(.system(size: 27, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Brand.accent)
-                .frame(width: 58, height: 58)
-                .background(Brand.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text("保存喜欢的内容")
-                    .font(.title2.weight(.bold))
-
-                Text("粘贴链接，一步存入系统相册")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 0)
+    private var groupedRecentSaves: [RecentSaveGroup] {
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: filteredRecentSaves) { save -> String in
+            if calendar.isDateInToday(save.savedAt) { return "今天" }
+            if calendar.isDateInYesterday(save.savedAt) { return "昨天" }
+            return "更早"
         }
-        .padding(18)
-        .background(
-            LinearGradient(
-                colors: [
-                    Brand.accent.opacity(0.13),
-                    Brand.violet.opacity(0.07),
-                    Color(uiColor: .secondarySystemGroupedBackground)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 26, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(.white.opacity(0.38), lineWidth: 0.8)
+        let order = ["今天", "昨天", "更早"]
+        return order.compactMap { title in
+            guard let saves = grouped[title], !saves.isEmpty else { return nil }
+            return RecentSaveGroup(title: title, saves: saves)
         }
     }
 
@@ -536,9 +553,13 @@ struct ContentView: View {
                             .font(.system(size: 24, weight: .medium))
                             .foregroundStyle(.tertiary)
 
-                        Text(profileContentFilter.emptyMessage)
-                            .font(.subheadline)
+                        Text(profileContentFilter.emptyTitle)
+                            .font(.subheadline.weight(.semibold))
+
+                        Text(profileContentFilter.emptyDescription)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 30)
@@ -594,60 +615,50 @@ struct ContentView: View {
 
     @ViewBuilder
     private var taskQueueSection: some View {
-        if !viewModel.jobs.isEmpty {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("保存任务")
-                            .font(.headline)
-                        Text("任务会按加入顺序逐个完成")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+        if let currentJob = prioritizedJobs.first {
+            let taskCount = prioritizedJobs.count
+
+            SaveQueueProgressView(
+                job: currentJob,
+                queueCount: taskCount,
+                cancelTitle: currentJob.batchID == nil ? "取消" : "取消全部",
+                onRetry: { viewModel.retry(currentJob) },
+                onForceSave: { viewModel.retry(currentJob, allowDuplicate: true) },
+                onCancel: {
+                    if currentJob.batchID == nil {
+                        viewModel.cancel(currentJob)
+                    } else {
+                        viewModel.cancelBatch(containing: currentJob)
                     }
-
-                    Spacer()
-
-                    if viewModel.jobs.contains(where: { $0.status.isTerminal }) {
-                        Button("清理") {
-                            viewModel.clearFinishedJobs()
-                        }
-                        .font(.caption.weight(.semibold))
-                    }
-                }
-
-                ForEach(Array(viewModel.jobs.prefix(6))) { job in
-                    SaveJobRow(
-                        job: job,
-                        onRetry: { viewModel.retry(job) },
-                        onForceSave: { viewModel.retry(job, allowDuplicate: true) },
-                        onCancel: { viewModel.cancel(job) },
-                        onRemove: { viewModel.remove(job) }
-                    )
-                }
-            }
-            .padding(18)
-            .surfaceCard(radius: 24)
+                },
+                onRemove: { viewModel.remove(currentJob) }
+            )
+            .transition(.opacity.combined(with: .move(edge: .bottom)))
         }
     }
 
-    private var supportCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("支持内容")
-                .font(.headline)
-
-            HStack(spacing: 8) {
-                SupportBadge(title: "帖子", icon: "rectangle.stack")
-                SupportBadge(title: "Reel", icon: "play.rectangle")
-                SupportBadge(title: "快拍", icon: "circle.dashed")
+    private var prioritizedJobs: [SaveJob] {
+        viewModel.jobs.sorted { lhs, rhs in
+            let leftPriority = jobPriority(lhs)
+            let rightPriority = jobPriority(rhs)
+            if leftPriority == rightPriority {
+                return lhs.createdAt < rhs.createdAt
             }
-
-            Label("内容只保存在这台设备的系统相册中", systemImage: "lock.shield")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            return leftPriority < rightPriority
         }
-        .padding(20)
-        .surfaceCard(radius: 24)
     }
+
+    private func jobPriority(_ job: SaveJob) -> Int {
+        if job.status.isRunning { return 0 }
+        if job.status == .queued { return 1 }
+        switch job.status {
+        case .failed, .duplicate: return 2
+        case .cancelled: return 3
+        case .saved, .idle: return 4
+        case .queued, .resolving, .downloading, .saving: return 0
+        }
+    }
+
 }
 
 private enum RecentContentFilter: String, CaseIterable, Identifiable {
@@ -675,6 +686,12 @@ private enum RecentContentFilter: String, CaseIterable, Identifiable {
         case .story: kind == .story
         }
     }
+}
+
+private struct RecentSaveGroup: Identifiable {
+    let title: String
+    let saves: [RecentSave]
+    var id: String { title }
 }
 
 private struct MediaPreviewView: View {
@@ -726,7 +743,7 @@ private struct MediaPreviewView: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: 50)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .tint(Brand.accent)
                 .disabled(selectedAssetIDs.isEmpty)
                 .padding(.horizontal, 20)
@@ -810,6 +827,7 @@ private struct SettingsView: View {
     @AppStorage(AppPreferences.previewBeforeSavingKey) private var previewsBeforeSaving = true
     @AppStorage(AppPreferences.duplicateProtectionKey) private var protectsAgainstDuplicates = true
     @AppStorage(AppPreferences.cellularDownloadsKey) private var allowsCellularDownloads = true
+    @AppStorage(AppPreferences.completionNotificationsKey) private var completionNotifications = true
 
     var body: some View {
         NavigationStack {
@@ -817,11 +835,17 @@ private struct SettingsView: View {
                 Section("保存流程") {
                     Toggle("保存链接前先预览", isOn: $previewsBeforeSaving)
                     Toggle("提醒重复保存", isOn: $protectsAgainstDuplicates)
+                    Toggle("完成后通知", isOn: $completionNotifications)
+                        .onChange(of: completionNotifications) { _, enabled in
+                            if enabled {
+                                Task { await NotificationService.requestAuthorizationIfNeeded() }
+                            }
+                        }
                 }
 
                 Section("保存位置") {
-                    Toggle("整理到“IG Save”相册", isOn: $usesDedicatedAlbum)
-                    Text(usesDedicatedAlbum ? "新保存的内容会同时加入 IG Save 系统相册。" : "内容直接添加到系统照片图库。")
+                    Toggle("整理到“IGSave”相册", isOn: $usesDedicatedAlbum)
+                    Text(usesDedicatedAlbum ? "新保存的内容会同时加入 IGSave 系统相册。" : "内容直接添加到系统照片图库。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -845,8 +869,17 @@ private struct SettingsView: View {
                 }
 
                 Section("系统权限") {
-                    Button("打开 IG Save 系统设置", action: onOpenSettings)
+                    Button("打开 IGSave 系统设置", action: onOpenSettings)
                     Text("如果相册权限曾被拒绝，可在这里重新开启。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("支持内容") {
+                    Label("帖子与轮播帖子", systemImage: "rectangle.stack")
+                    Label("Reels 短视频", systemImage: "play.rectangle")
+                    Label("当前可访问的快拍", systemImage: "circle.dashed")
+                    Text("内容只会保存到这台设备的系统照片图库。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -907,14 +940,25 @@ private enum ProfileContentFilter: Hashable {
         }
     }
 
-    var emptyMessage: String {
+    var emptyTitle: String {
         switch self {
         case .post:
-            "这个账号暂时没有可访问的帖子"
+            "暂无帖子"
         case .reel:
-            "这个账号暂时没有可访问的 Reels"
+            "暂无 Reels"
         case .story:
-            "这个账号目前没有可访问的快拍"
+            "暂无快拍"
+        }
+    }
+
+    var emptyDescription: String {
+        switch self {
+        case .post:
+            "这个账号最近没有可访问的帖子。"
+        case .reel:
+            "这个账号最近没有可访问的短视频。"
+        case .story:
+            "快拍可能已经过期，或当前账号无权查看。"
         }
     }
 }
@@ -943,20 +987,6 @@ private struct AppBackdrop: View {
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
-    }
-}
-
-private struct SupportBadge: View {
-    let title: String
-    let icon: String
-
-    var body: some View {
-        Label(title, systemImage: icon)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 11)
-            .background(Color.primary.opacity(0.045), in: Capsule())
     }
 }
 
@@ -1054,6 +1084,7 @@ private struct ProfilePostTile: View {
 
 private struct RecentSaveRow: View {
     let save: RecentSave
+    let onSelect: () -> Void
     let onOpen: () -> Void
     let onCopy: () -> Void
     let onSaveAgain: () -> Void
@@ -1071,9 +1102,11 @@ private struct RecentSaveRow: View {
 
                     Spacer(minLength: 0)
 
-                    Text(save.savedAt.formatted(date: .abbreviated, time: .shortened))
+                    Text(relativeTime)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
 
                 HStack(spacing: 7) {
@@ -1086,10 +1119,6 @@ private struct RecentSaveRow: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-                Text(save.sourceSummary)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
             }
 
             Menu {
@@ -1105,66 +1134,294 @@ private struct RecentSaveRow: View {
         }
         .padding(13)
         .surfaceCard(radius: 22)
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .onTapGesture(perform: onSelect)
+    }
+
+    private var relativeTime: String {
+        let calendar = Calendar.current
+        if calendar.isDateInYesterday(save.savedAt) {
+            return "昨天"
+        }
+        if !calendar.isDateInToday(save.savedAt) {
+            let components = calendar.dateComponents([.month, .day], from: save.savedAt)
+            return "\(components.month ?? 0)月\(components.day ?? 0)日"
+        }
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: save.savedAt, relativeTo: Date())
     }
 }
 
-private struct SaveJobRow: View {
+private struct RecentSaveDetailView: View {
+    let save: RecentSave
+    let onOpen: () -> Void
+    let onCopy: () -> Void
+    let onSaveAgain: () -> Void
+    let onDelete: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                AppBackdrop()
+
+                ScrollView {
+                    VStack(spacing: 20) {
+                        RecentDetailPreview(
+                            filename: save.previewFilename,
+                            contentKind: save.contentKind
+                        )
+
+                        HStack(alignment: .center, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(save.username)
+                                    .font(.title2.weight(.bold))
+                                    .lineLimit(1)
+                                Text("\(save.contentKind.title) · \(save.itemCount) 个文件")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer(minLength: 8)
+
+                            Text(detailDate)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.trailing)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+
+                        GlassEffectContainer(spacing: 10) {
+                            HStack(spacing: 10) {
+                                detailAction(
+                                    title: "再次保存",
+                                    systemImage: "arrow.clockwise",
+                                    isPrimary: true,
+                                    action: onSaveAgain
+                                )
+                                detailAction(
+                                    title: "Instagram",
+                                    systemImage: "arrow.up.right",
+                                    action: onOpen
+                                )
+                                detailAction(
+                                    title: "复制链接",
+                                    systemImage: "doc.on.doc",
+                                    action: onCopy
+                                )
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+                    .padding(.bottom, 34)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .navigationTitle("保存详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("完成") { dismiss() }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Menu {
+                        Button("删除记录", systemImage: "trash", role: .destructive, action: onDelete)
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .accessibilityLabel("更多操作")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func detailAction(
+        title: String,
+        systemImage: String,
+        isPrimary: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        let button = Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 68)
+        }
+
+        if isPrimary {
+            button
+                .buttonStyle(.glassProminent)
+                .tint(Brand.accent)
+        } else {
+            button.buttonStyle(.glass)
+        }
+    }
+
+    private var detailDate: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateStyle = .long
+        formatter.timeStyle = .short
+        return formatter.string(from: save.savedAt)
+    }
+}
+
+private struct RecentDetailPreview: View {
+    let filename: String?
+    let contentKind: InstagramContentKind
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(Color.black.opacity(0.94))
+
+            if let url = RecentSaveStore.previewURL(for: filename) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case let .success(image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    case .failure, .empty:
+                        fallback
+                    @unknown default:
+                        fallback
+                    }
+                }
+            } else {
+                fallback
+            }
+
+            if filename != nil {
+                Text(contentKind.previewLabel)
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.1)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(.black.opacity(0.42), in: Capsule())
+                    .padding(14)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 360)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(.white.opacity(0.12), lineWidth: 0.8)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 24, y: 12)
+    }
+
+    private var fallback: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Brand.accent.opacity(0.9), Brand.violet.opacity(0.9)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Text(contentKind.previewLabel)
+                .font(.title3.weight(.bold))
+                .tracking(2)
+                .foregroundStyle(.white.opacity(0.9))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct SaveQueueProgressView: View {
     let job: SaveJob
+    let queueCount: Int
+    let cancelTitle: String
     let onRetry: () -> Void
     let onForceSave: () -> Void
     let onCancel: () -> Void
     let onRemove: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                Image(systemName: job.status.iconName)
-                    .font(.system(size: 15, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(job.status.tint)
-                    .frame(width: 32, height: 32)
-                    .background(job.status.tint.opacity(0.12), in: Circle())
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(job.displayTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
 
+                Spacer(minLength: 8)
+
+                Text(job.status.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(job.status.tint)
+                    .lineLimit(1)
+            }
+
+            ProgressView(value: job.status.progressFraction)
+                .progressViewStyle(.linear)
+                .tint(job.status.tint)
+                .animation(.smooth, value: job.status.progressFraction)
+
+            HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(job.status.title)
-                        .font(.subheadline.weight(.semibold))
                     Text(job.status.detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
+
+                    if queueCount > 1 {
+                        Text("队列中还有 \(queueCount - 1) 项")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
 
-                Spacer(minLength: 8)
+                Spacer()
 
-                if job.status.isRunning {
-                    ProgressView()
-                        .controlSize(.small)
-                }
+                actionButtons
             }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 15)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
 
-            Text(job.input)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-
-            HStack(spacing: 14) {
+    @ViewBuilder
+    private var actionButtons: some View {
+        GlassEffectContainer(spacing: 7) {
+            HStack(spacing: 7) {
                 switch job.status {
                 case .queued, .idle, .resolving, .downloading, .saving:
-                    Button("取消", action: onCancel)
+                    Button(cancelTitle, role: .destructive, action: onCancel)
+                        .buttonStyle(.glass)
                 case .failed, .cancelled:
                     Button("重试", action: onRetry)
+                        .buttonStyle(.glassProminent)
+                        .tint(Brand.accent)
                     Button("移除", action: onRemove)
+                        .buttonStyle(.glass)
                 case .duplicate:
-                    Button("仍要保存", action: onForceSave)
+                    Button("保存", action: onForceSave)
+                        .buttonStyle(.glassProminent)
+                        .tint(Brand.accent)
                     Button("移除", action: onRemove)
+                        .buttonStyle(.glass)
                 case .saved:
-                    Button("移除", action: onRemove)
+                    EmptyView()
                 }
             }
-            .font(.caption.weight(.semibold))
         }
-        .padding(14)
-        .background(job.status.tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .font(.caption.weight(.semibold))
+        .controlSize(.small)
     }
 }
 
@@ -1236,32 +1493,22 @@ private extension View {
     func surfaceCard(radius: CGFloat) -> some View {
         modifier(SurfaceCardModifier(radius: radius))
     }
+
+    @ViewBuilder
+    func recentSearchable(enabled: Bool, text: Binding<String>) -> some View {
+        if enabled {
+            searchable(
+                text: text,
+                placement: .navigationBarDrawer(displayMode: .automatic),
+                prompt: "搜索账号"
+            )
+        } else {
+            self
+        }
+    }
 }
 
 private extension SaveStatus {
-    var iconName: String {
-        switch self {
-        case .idle:
-            "clock"
-        case .queued:
-            "text.badge.plus"
-        case .resolving:
-            "sparkle.magnifyingglass"
-        case .downloading:
-            "arrow.down.circle"
-        case .saving:
-            "photo.badge.plus"
-        case .saved:
-            "checkmark.circle.fill"
-        case .duplicate:
-            "checkmark.circle.badge.questionmark"
-        case .failed:
-            "exclamationmark.triangle.fill"
-        case .cancelled:
-            "xmark.circle.fill"
-        }
-    }
-
     var tint: Color {
         switch self {
         case .saved:
@@ -1276,6 +1523,23 @@ private extension SaveStatus {
             .secondary
         case .resolving, .downloading, .saving:
             Brand.accent
+        }
+    }
+
+    var progressFraction: Double {
+        switch self {
+        case .idle, .queued:
+            0.03
+        case .resolving:
+            0.1
+        case let .downloading(current, total):
+            0.1 + (Double(max(current - 1, 0)) / Double(max(total, 1))) * 0.8
+        case let .saving(current, total):
+            0.1 + ((Double(current) - 0.5) / Double(max(total, 1))) * 0.8
+        case .saved, .duplicate, .failed:
+            1
+        case .cancelled:
+            0
         }
     }
 
@@ -1300,6 +1564,56 @@ private extension SaveStatus {
         case .cancelled:
             "可以重新加入队列"
         }
+    }
+}
+
+private extension SaveJob {
+    var displayTitle: String {
+        let kindTitle = contentKind?.title ?? inferredContentKind.title
+        if let username, !username.isEmpty {
+            return "@\(username) · \(kindTitle)"
+        }
+        if let identity = instagramIdentity {
+            return "\(identity) · \(kindTitle)"
+        }
+        return kindTitle
+    }
+
+    private var instagramIdentity: String? {
+        let components = sourceURL?.pathComponents.filter { $0 != "/" } ?? []
+
+        if let storyIndex = components.firstIndex(of: "stories"),
+           components.indices.contains(storyIndex + 1) {
+            return "@\(components[storyIndex + 1])"
+        }
+
+        for route in ["p", "reel", "tv"] {
+            if let routeIndex = components.firstIndex(of: route),
+               components.indices.contains(routeIndex + 1) {
+                return components[routeIndex + 1]
+            }
+        }
+
+        return nil
+    }
+
+    private var inferredContentKind: InstagramContentKind {
+        let components = sourceURL?.pathComponents.filter { $0 != "/" } ?? []
+        if components.contains("stories") { return .story }
+        if components.contains("reel") || components.contains("tv") { return .reel }
+        if components.contains("p") { return .post }
+        return .unknown
+    }
+
+    private var sourceURL: URL? {
+        if let url = URL(string: input), url.scheme != nil {
+            return url
+        }
+
+        return input
+            .split(whereSeparator: { $0.isWhitespace })
+            .compactMap { URL(string: String($0)) }
+            .first { $0.scheme != nil }
     }
 }
 
@@ -1333,21 +1647,20 @@ private extension InstagramContentKind {
             "photo"
         }
     }
-}
 
-private extension RecentSave {
-    var sourceSummary: String {
-        guard let url = URL(string: sourceURL) else {
-            return sourceURL
+    var previewLabel: String {
+        switch self {
+        case .direct:
+            "MEDIA"
+        case .post:
+            "POST"
+        case .reel:
+            "REEL"
+        case .story:
+            "STORY"
+        case .unknown:
+            "IG"
         }
-
-        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-
-        if path.isEmpty {
-            return url.host(percentEncoded: false) ?? sourceURL
-        }
-
-        return path
     }
 }
 

@@ -5,21 +5,28 @@ extension Notification.Name {
 }
 
 enum PendingImportStore {
+    private nonisolated static let appGroupIdentifier = "group.com.haru.ig-save"
     private nonisolated static let key = "pending-import-links-v1"
+
+    private nonisolated static var sharedDefaults: UserDefaults {
+        UserDefaults(suiteName: appGroupIdentifier) ?? .standard
+    }
 
     nonisolated static func add(_ link: String) {
         let trimmed = link.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        var links = UserDefaults.standard.stringArray(forKey: key) ?? []
+        var links = sharedDefaults.stringArray(forKey: key) ?? []
         links.append(trimmed)
-        UserDefaults.standard.set(Array(links.suffix(20)), forKey: key)
+        sharedDefaults.set(Array(links.suffix(20)), forKey: key)
         NotificationCenter.default.post(name: .igSavePendingImport, object: nil)
     }
 
     nonisolated static func consumeAll() -> [String] {
-        let links = UserDefaults.standard.stringArray(forKey: key) ?? []
+        let sharedLinks = sharedDefaults.stringArray(forKey: key) ?? []
+        let legacyLinks = UserDefaults.standard.stringArray(forKey: key) ?? []
+        sharedDefaults.removeObject(forKey: key)
         UserDefaults.standard.removeObject(forKey: key)
-        return links
+        return sharedLinks + legacyLinks
     }
 }
