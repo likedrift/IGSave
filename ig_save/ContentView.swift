@@ -15,8 +15,11 @@ struct ContentView: View {
     @State private var inputMode: SaveInputMode = .link
     @State private var profileContentFilter: ProfileContentFilter = .post
     @State private var recentContentFilter: RecentContentFilter = .all
+    @State private var mediaLibraryScope: MediaLibraryScope = .all
     @State private var recentSearchText = ""
     @State private var isShowingSettings = false
+    @State private var isShowingCollectionManager = false
+    @State private var isShowingClearLibraryConfirmation = false
     @State private var selectedRecentSave: RecentSave?
     @FocusState private var isInputFocused: Bool
     @Environment(\.openURL) private var openURL
@@ -28,7 +31,7 @@ struct ContentView: View {
                 saveNavigation
             }
 
-            Tab("最近", systemImage: "clock.arrow.circlepath", value: AppTab.recents) {
+            Tab("媒体库", systemImage: "square.stack.3d.up", value: AppTab.recents) {
                 recentsNavigation
             }
         }
@@ -91,13 +94,42 @@ struct ContentView: View {
                 onOpenSettings: viewModel.openAppSettings
             )
         }
+        .sheet(isPresented: $isShowingCollectionManager) {
+            CollectionManagerView(
+                collections: viewModel.mediaCollections,
+                itemCount: { collection in
+                    viewModel.recentSaves.lazy.filter { $0.collectionIDs.contains(collection.id) }.count
+                },
+                onCreate: viewModel.createMediaCollection,
+                onRename: viewModel.renameMediaCollection,
+                onDelete: { collection in
+                    let updatedCollections = viewModel.deleteMediaCollection(collection)
+                    if mediaLibraryScope == .collection(collection.id) {
+                        mediaLibraryScope = .all
+                    }
+                    return updatedCollections
+                }
+            )
+        }
         .sheet(item: $selectedRecentSave) { save in
             RecentSaveDetailView(
                 save: save,
+                collections: viewModel.mediaCollections,
                 onOpen: {
                     if let url = URL(string: save.sourceURL) { openURL(url) }
                 },
                 onCopy: { viewModel.copyRecentLink(save) },
+                onUpdateMetadata: { isFavorite, collectionIDs, tags, note in
+                    if let updated = viewModel.updateRecentSaveMetadata(
+                        save,
+                        isFavorite: isFavorite,
+                        collectionIDs: collectionIDs,
+                        tags: tags,
+                        note: note
+                    ) {
+                        selectedRecentSave = updated
+                    }
+                },
                 onSaveAgain: {
                     viewModel.saveAgain(save)
                     selectedRecentSave = nil
@@ -155,14 +187,19 @@ struct ContentView: View {
             ZStack {
                 AppBackdrop()
 
-                if filteredRecentSaves.isEmpty && recentSearchText.isEmpty && recentContentFilter == .all {
+                if filteredRecentSaves.isEmpty,
+                   recentSearchText.isEmpty,
+                   recentContentFilter == .all,
+                   mediaLibraryScope == .all {
                     ContentUnavailableView(
-                        "还没有保存记录",
+                        "媒体库还是空的",
                         systemImage: "photo.stack",
-                        description: Text("保存成功的帖子、Reel 和快拍会显示在这里。")
+                        description: Text("保存成功的帖子、Reel 和快拍会自动加入这里。")
                     )
                 } else {
                     VStack(spacing: 12) {
+                        libraryScopeBar
+
                         Picker("内容类型", selection: $recentContentFilter) {
                             ForEach(RecentContentFilter.allCases) { filter in
                                 Text(filter.title).tag(filter)
@@ -173,19 +210,23 @@ struct ContentView: View {
 
                         if filteredRecentSaves.isEmpty {
                             ContentUnavailableView(
-                                "没有匹配的记录",
-                                systemImage: "magnifyingglass",
-                                description: Text("试试其他账号名称或内容类型。")
+                                filteredLibraryEmptyState.title,
+                                systemImage: filteredLibraryEmptyState.systemImage,
+                                description: Text(filteredLibraryEmptyState.description)
                             )
                         } else {
                             ScrollView {
-                                LazyVStack(alignment: .leading, spacing: 12, pinnedViews: [.sectionHeaders]) {
+                                LazyVStack(alignment: .leading, spacing: 12) {
                                     ForEach(groupedRecentSaves) { group in
                                         Section {
                                             ForEach(group.saves) { save in
                                                 RecentSaveRow(
                                                     save: save,
+                                                    collections: viewModel.mediaCollections,
                                                     onSelect: { selectedRecentSave = save },
+                                                    onToggleFavorite: {
+                                                        _ = viewModel.toggleFavorite(save)
+                                                    },
                                                     onOpen: {
                                                         if let url = URL(string: save.sourceURL) { openURL(url) }
                                                     },
@@ -201,7 +242,6 @@ struct ContentView: View {
                                                 .textCase(.uppercase)
                                                 .frame(maxWidth: .infinity, alignment: .leading)
                                                 .padding(.vertical, 6)
-                                                .background(Color(uiColor: .systemGroupedBackground).opacity(0.94))
                                         }
                                     }
                                 }
@@ -213,24 +253,42 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("最近保存")
+            .navigationTitle("媒体库")
             .navigationBarTitleDisplayMode(.large)
             .recentSearchable(
-                enabled: viewModel.recentSaves.count >= 8,
+                enabled: !viewModel.recentSaves.isEmpty,
                 text: $recentSearchText
             )
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("清空全部记录", role: .destructive) {
-                            viewModel.clearRecentSaves()
+                        Label("\(viewModel.recentSaves.count) 条媒体记录", systemImage: "photo.stack")
+                        Button("管理收藏夹", systemImage: "folder.badge.gearshape") {
+                            isShowingCollectionManager = true
                         }
+                        Divider()
+                        Button("清空全部记录", role: .destructive) {
+                            isShowingClearLibraryConfirmation = true
+                        }
+                        .disabled(viewModel.recentSaves.isEmpty)
                     } label: {
-                        Text("\(viewModel.recentSaves.count)")
-                            .font(.caption.weight(.semibold))
+                        Image(systemName: "ellipsis.circle")
                     }
-                    .disabled(viewModel.recentSaves.isEmpty)
+                    .accessibilityLabel("媒体库菜单")
                 }
+            }
+            .confirmationDialog(
+                "清空全部媒体库记录？",
+                isPresented: $isShowingClearLibraryConfirmation
+            ) {
+                Button("清空记录", role: .destructive) {
+                    viewModel.clearRecentSaves()
+                    mediaLibraryScope = .all
+                    recentSearchText = ""
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("系统照片不会被删除，但标签、备注和收藏关系会随记录一同移除。")
             }
         }
     }
@@ -239,25 +297,159 @@ struct ContentView: View {
         let query = recentSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return viewModel.recentSaves.filter { save in
             let matchesKind = recentContentFilter.matches(save.contentKind)
+            let matchesScope: Bool = switch mediaLibraryScope {
+            case .all: true
+            case .favorites: save.isFavorite
+            case let .collection(id): save.collectionIDs.contains(id)
+            }
+            let collectionNames = viewModel.mediaCollections
+                .filter { save.collectionIDs.contains($0.id) }
+                .map(\.name)
             let matchesQuery = query.isEmpty ||
                 save.username.lowercased().contains(query) ||
-                save.sourceURL.lowercased().contains(query)
-            return matchesKind && matchesQuery
+                save.tags.contains { $0.lowercased().contains(query) } ||
+                (save.note?.lowercased().contains(query) ?? false) ||
+                collectionNames.contains { $0.lowercased().contains(query) }
+            return matchesKind && matchesScope && matchesQuery
         }
+        .sorted { $0.savedAt > $1.savedAt }
     }
 
     private var groupedRecentSaves: [RecentSaveGroup] {
         let calendar = Calendar.current
-        let grouped = Dictionary(grouping: filteredRecentSaves) { save -> String in
-            if calendar.isDateInToday(save.savedAt) { return "今天" }
-            if calendar.isDateInYesterday(save.savedAt) { return "昨天" }
-            return "更早"
+        let startOfWeek = calendar.dateInterval(of: .weekOfYear, for: Date())?.start
+        let currentMonth = calendar.dateInterval(of: .month, for: Date())
+        var orderedTitles: [String] = []
+        var grouped: [String: [RecentSave]] = [:]
+
+        for save in filteredRecentSaves {
+            let title: String
+            if calendar.isDateInToday(save.savedAt) {
+                title = "今天"
+            } else if calendar.isDateInYesterday(save.savedAt) {
+                title = "昨天"
+            } else if let startOfWeek, save.savedAt >= startOfWeek {
+                title = "本周"
+            } else if currentMonth?.contains(save.savedAt) == true {
+                title = "本月"
+            } else {
+                title = Self.libraryMonthFormatter.string(from: save.savedAt)
+            }
+
+            if grouped[title] == nil {
+                orderedTitles.append(title)
+            }
+            grouped[title, default: []].append(save)
         }
-        let order = ["今天", "昨天", "更早"]
-        return order.compactMap { title in
+
+        return orderedTitles.compactMap { title in
             guard let saves = grouped[title], !saves.isEmpty else { return nil }
             return RecentSaveGroup(title: title, saves: saves)
         }
+    }
+
+    private static let libraryMonthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月"
+        return formatter
+    }()
+
+    private var filteredLibraryEmptyState: (title: String, systemImage: String, description: String) {
+        if !recentSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return (
+                "没有匹配的记录",
+                "magnifyingglass",
+                "试试缩短关键词，或调整收藏夹和内容类型。"
+            )
+        }
+
+        switch mediaLibraryScope {
+        case .favorites:
+            return (
+                "还没有收藏内容",
+                "star",
+                "轻点媒体卡片上的星标，常用内容会集中显示在这里。"
+            )
+        case .collection:
+            return (
+                "这个收藏夹还是空的",
+                "folder",
+                "打开媒体详情，在“整理信息”中把内容加入收藏夹。"
+            )
+        case .all:
+            break
+        }
+
+        if recentContentFilter != .all {
+            return (
+                "还没有(recentContentFilter.title)内容",
+                "line.3.horizontal.decrease.circle",
+                "选择其他内容类型，或继续保存新的 Instagram 内容。"
+            )
+        }
+
+        return (
+            "没有匹配的记录",
+            "line.3.horizontal.decrease.circle",
+            "试试调整收藏夹、内容类型或搜索关键词。"
+        )
+    }
+
+    private var libraryScopeBar: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 9) {
+                libraryScopeButton(title: "全部", systemImage: "square.grid.2x2", scope: .all)
+                libraryScopeButton(title: "收藏", systemImage: "star.fill", scope: .favorites)
+
+                ForEach(viewModel.mediaCollections) { collection in
+                    libraryScopeButton(
+                        title: collection.name,
+                        systemImage: "folder.fill",
+                        scope: .collection(collection.id)
+                    )
+                }
+
+                Button {
+                    isShowingCollectionManager = true
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 36, height: 36)
+                        .background(Color.primary.opacity(0.055), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("管理收藏夹")
+            }
+            .padding(.horizontal, 20)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    private func libraryScopeButton(
+        title: String,
+        systemImage: String,
+        scope: MediaLibraryScope
+    ) -> some View {
+        Button {
+            withAnimation(.snappy) {
+                mediaLibraryScope = scope
+            }
+        } label: {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+                .foregroundStyle(mediaLibraryScope == scope ? Color.white : Color.primary)
+                .background(
+                    mediaLibraryScope == scope ? Brand.accent : Color.primary.opacity(0.055),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(mediaLibraryScope == scope ? .isSelected : [])
     }
 
     private var linkComposer: some View {
@@ -290,7 +482,7 @@ struct ContentView: View {
             HStack(spacing: 11) {
                 Image(systemName: viewModel.hasInstagramSession ? "checkmark.shield.fill" : "person.badge.key")
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(viewModel.hasInstagramSession ? Color.green : Brand.accent)
+                    .foregroundStyle(viewModel.hasInstagramSession ? Brand.success : Brand.accent)
                     .frame(width: 22)
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -359,7 +551,7 @@ struct ContentView: View {
             if let previewError = viewModel.previewError {
                 Label(previewError, systemImage: "exclamationmark.circle.fill")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Brand.danger)
             }
 
             GlassEffectContainer(spacing: 12) {
@@ -430,7 +622,7 @@ struct ContentView: View {
                     viewModel.toggleCurrentProfileFavorite()
                 } label: {
                     Image(systemName: viewModel.isCurrentProfileFavorite ? "star.fill" : "star")
-                        .foregroundStyle(viewModel.isCurrentProfileFavorite ? .yellow : Brand.accent)
+                        .foregroundStyle(viewModel.isCurrentProfileFavorite ? Brand.favorite : Brand.accent)
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
@@ -476,7 +668,7 @@ struct ContentView: View {
             if let profileError = viewModel.profileError {
                 Label(profileError, systemImage: "exclamationmark.circle.fill")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Brand.danger)
             }
 
             Button {
@@ -689,6 +881,12 @@ private enum RecentContentFilter: String, CaseIterable, Identifiable {
     }
 }
 
+private enum MediaLibraryScope: Hashable {
+    case all
+    case favorites
+    case collection(UUID)
+}
+
 private struct RecentSaveGroup: Identifiable {
     let title: String
     let saves: [RecentSave]
@@ -775,11 +973,7 @@ private struct PreviewAssetTile: View {
                         }
                     }
                 } else {
-                    LinearGradient(
-                        colors: [Brand.accent.opacity(0.72), Brand.violet.opacity(0.78)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
+                    Brand.mediaSurface
                     Image(systemName: "play.fill")
                         .font(.system(size: 28, weight: .bold))
                         .foregroundStyle(.white)
@@ -1003,7 +1197,7 @@ private struct DiagnosticEntryRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: entry.outcome == .success ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .foregroundStyle(entry.outcome == .success ? .green : Brand.accent)
+                .foregroundStyle(entry.outcome == .success ? Brand.success : Brand.accent)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(entry.category?.title ?? operationTitle)
@@ -1091,29 +1285,24 @@ private enum ProfileContentFilter: Hashable {
 }
 
 private enum Brand {
-    static let accent = Color(red: 0.91, green: 0.18, blue: 0.36)
-    static let violet = Color(red: 0.43, green: 0.28, blue: 0.72)
+    static let accent = Color(uiColor: UIColor { traits in
+        if traits.userInterfaceStyle == .dark {
+            return UIColor(red: 0.40, green: 0.47, blue: 0.52, alpha: 1)
+        }
+        return UIColor(red: 0.31, green: 0.37, blue: 0.41, alpha: 1)
+    })
+    static let mediaSurface = Color(red: 0.25, green: 0.29, blue: 0.32)
+    static let success = Color(red: 0.34, green: 0.49, blue: 0.39)
+    static let warning = Color(red: 0.62, green: 0.49, blue: 0.30)
+    static let danger = Color(red: 0.61, green: 0.31, blue: 0.33)
+    static let favorite = Color(red: 0.62, green: 0.52, blue: 0.31)
 }
 
 private struct AppBackdrop: View {
     var body: some View {
-        ZStack {
-            Color(uiColor: .systemGroupedBackground)
-
-            Circle()
-                .fill(Brand.accent.opacity(0.13))
-                .frame(width: 280, height: 280)
-                .blur(radius: 72)
-                .offset(x: -150, y: -280)
-
-            Circle()
-                .fill(Brand.violet.opacity(0.10))
-                .frame(width: 260, height: 260)
-                .blur(radius: 82)
-                .offset(x: 170, y: 170)
-        }
-        .ignoresSafeArea()
-        .allowsHitTesting(false)
+        Color(uiColor: .systemGroupedBackground)
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
     }
 }
 
@@ -1196,11 +1385,7 @@ private struct ProfilePostTile: View {
 
     private var placeholder: some View {
         ZStack {
-            LinearGradient(
-                colors: [Brand.accent.opacity(0.68), Brand.violet.opacity(0.72)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            Brand.mediaSurface
 
             Image(systemName: post.contentKind.iconName)
                 .font(.system(size: 26, weight: .semibold))
@@ -1211,11 +1396,14 @@ private struct ProfilePostTile: View {
 
 private struct RecentSaveRow: View {
     let save: RecentSave
+    let collections: [MediaCollection]
     let onSelect: () -> Void
+    let onToggleFavorite: () -> Void
     let onOpen: () -> Void
     let onCopy: () -> Void
     let onSaveAgain: () -> Void
     let onDelete: () -> Void
+    @State private var isShowingDeleteConfirmation = false
 
     var body: some View {
         HStack(spacing: 15) {
@@ -1246,14 +1434,31 @@ private struct RecentSaveRow: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
+                if !metadataLabels.isEmpty {
+                    Text(metadataLabels.joined(separator: "  ·  "))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Brand.accent)
+                        .lineLimit(1)
+                }
             }
 
+            Button(action: onToggleFavorite) {
+                Image(systemName: save.isFavorite ? "star.fill" : "star")
+                    .foregroundStyle(save.isFavorite ? Brand.favorite : Color.secondary)
+                    .frame(width: 30, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(save.isFavorite ? "取消收藏" : "加入收藏")
+
             Menu {
+                Button(save.isFavorite ? "取消收藏" : "加入收藏", systemImage: save.isFavorite ? "star.slash" : "star", action: onToggleFavorite)
                 Button("打开原链接", systemImage: "safari", action: onOpen)
                 Button("复制链接", systemImage: "doc.on.doc", action: onCopy)
                 Button("再次保存", systemImage: "arrow.clockwise", action: onSaveAgain)
                 Divider()
-                Button("删除记录", systemImage: "trash", role: .destructive, action: onDelete)
+                Button("删除记录", systemImage: "trash", role: .destructive) {
+                    isShowingDeleteConfirmation = true
+                }
             } label: {
                 Image(systemName: "ellipsis")
                     .frame(width: 28, height: 44)
@@ -1263,6 +1468,25 @@ private struct RecentSaveRow: View {
         .surfaceCard(radius: 22)
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .onTapGesture(perform: onSelect)
+        .confirmationDialog(
+            "删除这条媒体记录？",
+            isPresented: $isShowingDeleteConfirmation
+        ) {
+            Button("删除记录", role: .destructive, action: onDelete)
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("系统照片不会被删除，但这条记录的收藏夹、标签和备注会一并移除。")
+        }
+    }
+
+    private var metadataLabels: [String] {
+        let collectionNames = collections
+            .filter { save.collectionIDs.contains($0.id) }
+            .prefix(1)
+            .map(\.name)
+        let tags = save.tags.prefix(2).map { "#\($0)" }
+        let noteLabel = save.note?.isEmpty == false ? ["有备注"] : []
+        return collectionNames + tags + noteLabel
     }
 
     private var relativeTime: String {
@@ -1284,12 +1508,42 @@ private struct RecentSaveRow: View {
 
 private struct RecentSaveDetailView: View {
     let save: RecentSave
+    let collections: [MediaCollection]
     let onOpen: () -> Void
     let onCopy: () -> Void
+    let onUpdateMetadata: (Bool, [UUID], [String], String?) -> Void
     let onSaveAgain: () -> Void
     let onDelete: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var isFavorite: Bool
+    @State private var collectionIDs: [UUID]
+    @State private var tags: [String]
+    @State private var note: String?
+    @State private var isEditingMetadata = false
+    @State private var isShowingDeleteConfirmation = false
+
+    init(
+        save: RecentSave,
+        collections: [MediaCollection],
+        onOpen: @escaping () -> Void,
+        onCopy: @escaping () -> Void,
+        onUpdateMetadata: @escaping (Bool, [UUID], [String], String?) -> Void,
+        onSaveAgain: @escaping () -> Void,
+        onDelete: @escaping () -> Void
+    ) {
+        self.save = save
+        self.collections = collections
+        self.onOpen = onOpen
+        self.onCopy = onCopy
+        self.onUpdateMetadata = onUpdateMetadata
+        self.onSaveAgain = onSaveAgain
+        self.onDelete = onDelete
+        _isFavorite = State(initialValue: save.isFavorite)
+        _collectionIDs = State(initialValue: save.collectionIDs)
+        _tags = State(initialValue: save.tags)
+        _note = State(initialValue: save.note)
+    }
 
     var body: some View {
         NavigationStack {
@@ -1315,12 +1569,52 @@ private struct RecentSaveDetailView: View {
 
                             Spacer(minLength: 8)
 
-                            Text(detailDate)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.tertiary)
-                                .multilineTextAlignment(.trailing)
-                                .fixedSize(horizontal: true, vertical: false)
+                            VStack(alignment: .trailing, spacing: 8) {
+                                Button {
+                                    isFavorite.toggle()
+                                    persistMetadata()
+                                } label: {
+                                    Image(systemName: isFavorite ? "star.fill" : "star")
+                                        .font(.title3.weight(.semibold))
+                                        .foregroundStyle(isFavorite ? Brand.favorite : Brand.accent)
+                                }
+                                .buttonStyle(.glass)
+                                .accessibilityLabel(isFavorite ? "取消收藏" : "加入收藏")
+
+                                Text(detailDate)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.tertiary)
+                                    .multilineTextAlignment(.trailing)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
                         }
+
+                        Button {
+                            isEditingMetadata = true
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "folder.badge.gearshape")
+                                    .font(.title3)
+                                    .foregroundStyle(Brand.accent)
+
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("整理信息")
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(metadataSummary)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(16)
+                            .surfaceCard(radius: 20)
+                        }
+                        .buttonStyle(.plain)
 
                         GlassEffectContainer(spacing: 10) {
                             HStack(spacing: 10) {
@@ -1358,14 +1652,61 @@ private struct RecentSaveDetailView: View {
 
                 ToolbarItem(placement: .confirmationAction) {
                     Menu {
-                        Button("删除记录", systemImage: "trash", role: .destructive, action: onDelete)
+                        Button("编辑整理信息", systemImage: "tag") {
+                            isEditingMetadata = true
+                        }
+                        Button("删除记录", systemImage: "trash", role: .destructive) {
+                            isShowingDeleteConfirmation = true
+                        }
                     } label: {
                         Image(systemName: "ellipsis")
                     }
                     .accessibilityLabel("更多操作")
                 }
             }
+            .sheet(isPresented: $isEditingMetadata) {
+                LibraryMetadataEditor(
+                    collections: collections,
+                    initialCollectionIDs: collectionIDs,
+                    initialTags: tags,
+                    initialNote: note
+                ) { updatedCollectionIDs, updatedTags, updatedNote in
+                    collectionIDs = updatedCollectionIDs
+                    tags = updatedTags
+                    note = updatedNote
+                    persistMetadata()
+                }
+            }
+            .confirmationDialog(
+                "删除这条媒体记录？",
+                isPresented: $isShowingDeleteConfirmation
+            ) {
+                Button("删除记录", role: .destructive, action: onDelete)
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("系统照片不会被删除，但这条记录的收藏夹、标签和备注会一并移除。")
+            }
         }
+    }
+
+    private var metadataSummary: String {
+        let collectionNames = collections
+            .filter { collectionIDs.contains($0.id) }
+            .map(\.name)
+        let tagNames = tags.map { "#\($0)" }
+        let values = collectionNames + tagNames
+
+        if !values.isEmpty {
+            return values.joined(separator: " · ")
+        }
+        if let note, !note.isEmpty {
+            return note
+        }
+        return "添加收藏夹、标签或备注"
+    }
+
+    private func persistMetadata() {
+        onUpdateMetadata(isFavorite, collectionIDs, tags, note)
     }
 
     @ViewBuilder
@@ -1402,6 +1743,298 @@ private struct RecentSaveDetailView: View {
         formatter.dateStyle = .long
         formatter.timeStyle = .short
         return formatter.string(from: save.savedAt)
+    }
+}
+
+private struct LibraryMetadataEditor: View {
+    let collections: [MediaCollection]
+    let onSave: ([UUID], [String], String?) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedCollectionIDs: Set<UUID>
+    @State private var tagText: String
+    @State private var noteText: String
+
+    init(
+        collections: [MediaCollection],
+        initialCollectionIDs: [UUID],
+        initialTags: [String],
+        initialNote: String?,
+        onSave: @escaping ([UUID], [String], String?) -> Void
+    ) {
+        self.collections = collections
+        self.onSave = onSave
+        _selectedCollectionIDs = State(initialValue: Set(initialCollectionIDs))
+        _tagText = State(initialValue: initialTags.joined(separator: "，"))
+        _noteText = State(initialValue: initialNote ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("收藏夹") {
+                    if collections.isEmpty {
+                        Text("还没有收藏夹，可在媒体库右上角菜单中创建。")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(collections) { collection in
+                            Button {
+                                if selectedCollectionIDs.contains(collection.id) {
+                                    selectedCollectionIDs.remove(collection.id)
+                                } else {
+                                    selectedCollectionIDs.insert(collection.id)
+                                }
+                            } label: {
+                                HStack {
+                                    Label(collection.name, systemImage: "folder.fill")
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    if selectedCollectionIDs.contains(collection.id) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(Brand.accent)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section("标签") {
+                    TextField("旅行，美食，灵感", text: $tagText, axis: .vertical)
+                        .lineLimit(2...4)
+                    Text("使用空格、逗号或 # 分隔，最多保留 10 个标签。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("备注") {
+                    TextField("写下保存它的原因或后续想法…", text: $noteText, axis: .vertical)
+                        .lineLimit(3...7)
+                    Text("备注仅保存在本机，最多 300 个字符。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("整理媒体")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        let orderedCollectionIDs = collections
+                            .map(\.id)
+                            .filter { selectedCollectionIDs.contains($0) }
+                        onSave(orderedCollectionIDs, parsedTags, normalizedNote)
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var parsedTags: [String] {
+        let separators = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: ",，#"))
+        return RecentSaveStore.normalizedTags(
+            tagText.components(separatedBy: separators)
+        )
+    }
+
+    private var normalizedNote: String? {
+        let value = String(noteText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300))
+        return value.isEmpty ? nil : value
+    }
+}
+
+private struct CollectionManagerView: View {
+    let itemCount: (MediaCollection) -> Int
+    let onCreate: (String) -> [MediaCollection]
+    let onRename: (MediaCollection, String) -> [MediaCollection]
+    let onDelete: (MediaCollection) -> [MediaCollection]
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var collections: [MediaCollection]
+    @State private var newCollectionName = ""
+    @State private var editingCollection: MediaCollection?
+    @State private var editedName = ""
+    @State private var isShowingRenameAlert = false
+    @State private var deletingCollection: MediaCollection?
+    @State private var isShowingDeleteDialog = false
+
+    init(
+        collections: [MediaCollection],
+        itemCount: @escaping (MediaCollection) -> Int,
+        onCreate: @escaping (String) -> [MediaCollection],
+        onRename: @escaping (MediaCollection, String) -> [MediaCollection],
+        onDelete: @escaping (MediaCollection) -> [MediaCollection]
+    ) {
+        _collections = State(initialValue: collections)
+        self.itemCount = itemCount
+        self.onCreate = onCreate
+        self.onRename = onRename
+        self.onDelete = onDelete
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("新建收藏夹") {
+                    HStack {
+                        TextField("例如：旅行灵感", text: $newCollectionName)
+                            .submitLabel(.done)
+                            .onSubmit(createCollection)
+
+                        Button("添加", action: createCollection)
+                            .disabled(!canCreateCollection)
+                    }
+                    Text(newCollectionValidationMessage ?? "收藏夹用于按主题整理内容，不会修改系统照片图库。")
+                        .font(.caption)
+                        .foregroundStyle(newCollectionValidationMessage == nil ? Color.secondary : Brand.danger)
+                }
+
+                Section("我的收藏夹") {
+                    if collections.isEmpty {
+                        Text("还没有收藏夹。")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(collections) { collection in
+                            CollectionManagerRow(
+                                collection: collection,
+                                itemCount: itemCount(collection),
+                                onRename: {
+                                    editedName = collection.name
+                                    editingCollection = collection
+                                    isShowingRenameAlert = true
+                                },
+                                onDelete: {
+                                    deletingCollection = collection
+                                    isShowingDeleteDialog = true
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+            .navigationTitle("管理收藏夹")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+            .alert("重命名收藏夹", isPresented: $isShowingRenameAlert, presenting: editingCollection) { collection in
+                TextField("收藏夹名称", text: $editedName)
+                Button("取消", role: .cancel) {
+                    editingCollection = nil
+                }
+                Button("保存") {
+                    collections = onRename(collection, editedName)
+                    editingCollection = nil
+                }
+                .disabled(!canRename(collection))
+            } message: { collection in
+                Text(renameValidationMessage(for: collection) ?? "名称最多 30 个字符，且不能与现有收藏夹重名。")
+            }
+            .confirmationDialog(
+                "删除“\(deletingCollection?.name ?? "")”？",
+                isPresented: $isShowingDeleteDialog,
+                presenting: deletingCollection
+            ) { collection in
+                Button("删除收藏夹", role: .destructive) {
+                    collections = onDelete(collection)
+                    deletingCollection = nil
+                }
+                Button("取消", role: .cancel) {
+                    deletingCollection = nil
+                }
+            } message: { _ in
+                Text("收藏夹中的媒体记录会保留，只移除分类关系。")
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func createCollection() {
+        let name = MediaCollectionStore.normalizedName(newCollectionName)
+        guard canCreateCollection else { return }
+        collections = onCreate(name)
+        newCollectionName = ""
+    }
+
+    private var canCreateCollection: Bool {
+        !MediaCollectionStore.normalizedName(newCollectionName).isEmpty &&
+            newCollectionValidationMessage == nil
+    }
+
+    private var newCollectionValidationMessage: String? {
+        let trimmedName = newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = MediaCollectionStore.normalizedName(newCollectionName)
+        if collections.count >= MediaCollectionStore.maximumCount {
+            return "最多可创建 \(MediaCollectionStore.maximumCount) 个收藏夹。"
+        }
+        if trimmedName.count > 30 {
+            return "收藏夹名称最多 30 个字符。"
+        }
+        if name.isEmpty {
+            return newCollectionName.isEmpty ? nil : "请输入收藏夹名称。"
+        }
+        if collections.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            return "已经有同名收藏夹。"
+        }
+        return nil
+    }
+
+    private func canRename(_ collection: MediaCollection) -> Bool {
+        renameValidationMessage(for: collection) == nil
+    }
+
+    private func renameValidationMessage(for collection: MediaCollection) -> String? {
+        let trimmedName = editedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = MediaCollectionStore.normalizedName(editedName)
+        if trimmedName.count > 30 {
+            return "收藏夹名称最多 30 个字符。"
+        }
+        if name.isEmpty {
+            return "请输入收藏夹名称。"
+        }
+        if collections.contains(where: {
+            $0.id != collection.id && $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }) {
+            return "已经有同名收藏夹。"
+        }
+        return nil
+    }
+}
+
+private struct CollectionManagerRow: View {
+    let collection: MediaCollection
+    let itemCount: Int
+    let onRename: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "folder.fill")
+                .foregroundStyle(Brand.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(collection.name)
+                Text("\(itemCount) 项")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Menu {
+                Button("重命名", systemImage: "pencil", action: onRename)
+                Button("删除", systemImage: "trash", role: .destructive, action: onDelete)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 34, height: 40)
+            }
+        }
     }
 }
 
@@ -1455,11 +2088,7 @@ private struct RecentDetailPreview: View {
 
     private var fallback: some View {
         ZStack {
-            LinearGradient(
-                colors: [Brand.accent.opacity(0.9), Brand.violet.opacity(0.9)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            Brand.mediaSurface
             Text(contentKind.previewLabel)
                 .font(.title3.weight(.bold))
                 .tracking(2)
@@ -1567,13 +2196,7 @@ private struct RecentPreview: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 17, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Brand.accent.opacity(0.92), Brand.violet.opacity(0.84)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+                .fill(Brand.mediaSurface)
 
             if let url = RecentSaveStore.previewURL(for: filename) {
                 AsyncImage(url: url) { phase in
@@ -1635,7 +2258,7 @@ private extension View {
             searchable(
                 text: text,
                 placement: .navigationBarDrawer(displayMode: .automatic),
-                prompt: "搜索账号"
+                prompt: "搜索账号、标签或备注"
             )
         } else {
             self
@@ -1647,13 +2270,13 @@ private extension SaveStatus {
     var tint: Color {
         switch self {
         case .saved:
-            .green
+            Brand.success
         case .partiallySaved:
-            .orange
+            Brand.warning
         case .duplicate:
-            .orange
+            Brand.warning
         case .failed:
-            .red
+            Brand.danger
         case .cancelled:
             .secondary
         case .idle, .queued:

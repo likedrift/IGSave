@@ -91,6 +91,11 @@ struct RecentSave: Identifiable, Codable, Equatable, Sendable {
     let contentKind: InstagramContentKind
     let sourceURL: String
     let previewFilename: String?
+    var isFavorite: Bool
+    var collectionIDs: [UUID]
+    var tags: [String]
+    var note: String?
+    var metadataUpdatedAt: Date?
 
     init(
         id: UUID = UUID(),
@@ -99,7 +104,12 @@ struct RecentSave: Identifiable, Codable, Equatable, Sendable {
         itemCount: Int,
         contentKind: InstagramContentKind,
         sourceURL: String,
-        previewFilename: String?
+        previewFilename: String?,
+        isFavorite: Bool = false,
+        collectionIDs: [UUID] = [],
+        tags: [String] = [],
+        note: String? = nil,
+        metadataUpdatedAt: Date? = nil
     ) {
         self.id = id
         self.username = username
@@ -108,5 +118,57 @@ struct RecentSave: Identifiable, Codable, Equatable, Sendable {
         self.contentKind = contentKind
         self.sourceURL = sourceURL
         self.previewFilename = previewFilename
+        self.isFavorite = isFavorite
+        self.collectionIDs = collectionIDs
+        self.tags = tags
+        self.note = note
+        self.metadataUpdatedAt = metadataUpdatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case username
+        case savedAt
+        case itemCount
+        case contentKind
+        case sourceURL
+        case previewFilename
+        case isFavorite
+        case collectionIDs
+        case tags
+        case note
+        case metadataUpdatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        username = try container.decode(String.self, forKey: .username)
+        savedAt = try container.decode(Date.self, forKey: .savedAt)
+        itemCount = try container.decode(Int.self, forKey: .itemCount)
+        contentKind = try container.decode(InstagramContentKind.self, forKey: .contentKind)
+        sourceURL = try container.decode(String.self, forKey: .sourceURL)
+        previewFilename = try container.decodeIfPresent(String.self, forKey: .previewFilename)
+        isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        collectionIDs = try container.decodeIfPresent([UUID].self, forKey: .collectionIDs) ?? []
+        tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+        note = try container.decodeIfPresent(String.self, forKey: .note)
+        metadataUpdatedAt = try container.decodeIfPresent(Date.self, forKey: .metadataUpdatedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(username, forKey: .username)
+        try container.encode(savedAt, forKey: .savedAt)
+        try container.encode(itemCount, forKey: .itemCount)
+        try container.encode(contentKind, forKey: .contentKind)
+        try container.encode(sourceURL, forKey: .sourceURL)
+        try container.encodeIfPresent(previewFilename, forKey: .previewFilename)
+        try container.encode(isFavorite, forKey: .isFavorite)
+        try container.encode(collectionIDs, forKey: .collectionIDs)
+        try container.encode(tags, forKey: .tags)
+        try container.encodeIfPresent(note, forKey: .note)
+        try container.encodeIfPresent(metadataUpdatedAt, forKey: .metadataUpdatedAt)
     }
 }

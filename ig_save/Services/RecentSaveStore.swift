@@ -7,7 +7,7 @@ import Foundation
 
 enum RecentSaveStore {
     private static let storageKey = "recent-saves-v1"
-    private static let maxCount = 500
+    private static let maxCount = 2_000
 
     static func load() -> [RecentSave] {
         if let data = try? Data(contentsOf: storageURL()),
@@ -61,6 +61,64 @@ enum RecentSaveStore {
         persist([])
         pruneThumbnails(keeping: [])
         return []
+    }
+
+    static func updateMetadata(
+        for saveID: UUID,
+        isFavorite: Bool,
+        collectionIDs: [UUID],
+        tags: [String],
+        note: String?,
+        in saves: [RecentSave],
+        now: Date = Date()
+    ) -> [RecentSave] {
+        guard let index = saves.firstIndex(where: { $0.id == saveID }) else { return saves }
+
+        var updated = saves
+        updated[index].isFavorite = isFavorite
+        var seenCollectionIDs: Set<UUID> = []
+        updated[index].collectionIDs = collectionIDs.filter { seenCollectionIDs.insert($0).inserted }
+        updated[index].tags = normalizedTags(tags)
+        updated[index].note = normalizedNote(note)
+        updated[index].metadataUpdatedAt = now
+        persist(updated)
+        return updated
+    }
+
+    static func removeCollection(_ collectionID: UUID, from saves: [RecentSave]) -> [RecentSave] {
+        var updated = saves
+        var didChange = false
+
+        for index in updated.indices where updated[index].collectionIDs.contains(collectionID) {
+            updated[index].collectionIDs.removeAll { $0 == collectionID }
+            updated[index].metadataUpdatedAt = Date()
+            didChange = true
+        }
+
+        if didChange {
+            persist(updated)
+        }
+        return updated
+    }
+
+    static func normalizedTags(_ rawTags: [String]) -> [String] {
+        var normalized: [String] = []
+        var normalizedKeys: Set<String> = []
+        let trimmingCharacters = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: "#"))
+
+        for rawTag in rawTags {
+            let tag = String(
+                rawTag
+                    .trimmingCharacters(in: trimmingCharacters)
+                    .prefix(20)
+            )
+            let key = tag.lowercased()
+            guard !tag.isEmpty, normalizedKeys.insert(key).inserted else { continue }
+            normalized.append(tag)
+            if normalized.count == 10 { break }
+        }
+        return normalized
     }
 
     static func previewURL(for filename: String?) -> URL? {
@@ -120,6 +178,12 @@ enum RecentSaveStore {
             value.removeLast()
         }
         return value
+    }
+
+    private static func normalizedNote(_ rawNote: String?) -> String? {
+        guard let rawNote else { return nil }
+        let note = String(rawNote.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300))
+        return note.isEmpty ? nil : note
     }
 
     private static func storageURL() -> URL {

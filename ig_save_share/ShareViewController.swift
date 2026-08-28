@@ -4,6 +4,14 @@ import UniformTypeIdentifiers
 final class ShareViewController: UIViewController {
     private static let appGroupIdentifier = "group.com.haru.ig-save"
     private static let pendingLinksKey = "pending-import-links-v1"
+    private static let accentColor = UIColor { traits in
+        if traits.userInterfaceStyle == .dark {
+            return UIColor(red: 0.40, green: 0.47, blue: 0.52, alpha: 1)
+        }
+        return UIColor(red: 0.31, green: 0.37, blue: 0.41, alpha: 1)
+    }
+    private static let successColor = UIColor(red: 0.34, green: 0.49, blue: 0.39, alpha: 1)
+    private static let dangerColor = UIColor(red: 0.61, green: 0.31, blue: 0.33, alpha: 1)
 
     private let panelView = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
     private let iconView = UIImageView()
@@ -31,7 +39,7 @@ final class ShareViewController: UIViewController {
 
         iconView.image = UIImage(systemName: "square.and.arrow.down.fill")
         iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 34, weight: .semibold)
-        iconView.tintColor = UIColor(red: 0.91, green: 0.18, blue: 0.36, alpha: 1)
+        iconView.tintColor = Self.accentColor
         iconView.contentMode = .scaleAspectFit
 
         statusLabel.text = "正在加入 IGSave…"
@@ -80,7 +88,7 @@ final class ShareViewController: UIViewController {
 
         activityIndicator.stopAnimating()
         iconView.image = UIImage(systemName: "checkmark.circle.fill")
-        iconView.tintColor = .systemGreen
+        iconView.tintColor = Self.successColor
         statusLabel.text = "已加入保存队列\n打开 IGSave 后自动处理"
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         UIView.animate(withDuration: 0.25) {
@@ -145,7 +153,7 @@ final class ShareViewController: UIViewController {
     private func showFailure(_ message: String) {
         activityIndicator.stopAnimating()
         iconView.image = UIImage(systemName: "exclamationmark.triangle.fill")
-        iconView.tintColor = .systemRed
+        iconView.tintColor = Self.dangerColor
         statusLabel.text = message
         closeButton.isHidden = false
         UINotificationFeedbackGenerator().notificationOccurred(.error)

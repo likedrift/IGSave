@@ -16,6 +16,7 @@ final class DownloadViewModel: ObservableObject {
     @Published private(set) var jobs: [SaveJob] = SaveJobStore.load()
     @Published private(set) var isWorking = false
     @Published private(set) var recentSaves: [RecentSave] = RecentSaveStore.load()
+    @Published private(set) var mediaCollections: [MediaCollection] = MediaCollectionStore.load()
     @Published private(set) var hasInstagramSession = false
     @Published private(set) var instagramSessionState: InstagramSessionState = .disconnected
     @Published var isShowingInstagramLogin = false
@@ -298,6 +299,56 @@ final class DownloadViewModel: ObservableObject {
 
     func clearRecentSaves() {
         recentSaves = RecentSaveStore.removeAll(from: recentSaves)
+    }
+
+    @discardableResult
+    func updateRecentSaveMetadata(
+        _ save: RecentSave,
+        isFavorite: Bool,
+        collectionIDs: [UUID],
+        tags: [String],
+        note: String?
+    ) -> RecentSave? {
+        recentSaves = RecentSaveStore.updateMetadata(
+            for: save.id,
+            isFavorite: isFavorite,
+            collectionIDs: collectionIDs,
+            tags: tags,
+            note: note,
+            in: recentSaves
+        )
+        HapticFeedback.selection()
+        return recentSaves.first { $0.id == save.id }
+    }
+
+    @discardableResult
+    func toggleFavorite(_ save: RecentSave) -> RecentSave? {
+        updateRecentSaveMetadata(
+            save,
+            isFavorite: !save.isFavorite,
+            collectionIDs: save.collectionIDs,
+            tags: save.tags,
+            note: save.note
+        )
+    }
+
+    @discardableResult
+    func createMediaCollection(named name: String) -> [MediaCollection] {
+        mediaCollections = MediaCollectionStore.create(named: name, in: mediaCollections)
+        return mediaCollections
+    }
+
+    @discardableResult
+    func renameMediaCollection(_ collection: MediaCollection, to name: String) -> [MediaCollection] {
+        mediaCollections = MediaCollectionStore.rename(collection, to: name, in: mediaCollections)
+        return mediaCollections
+    }
+
+    @discardableResult
+    func deleteMediaCollection(_ collection: MediaCollection) -> [MediaCollection] {
+        mediaCollections = MediaCollectionStore.remove(collection, from: mediaCollections)
+        recentSaves = RecentSaveStore.removeCollection(collection.id, from: recentSaves)
+        return mediaCollections
     }
 
     func copyRecentLink(_ save: RecentSave) {
@@ -803,7 +854,12 @@ final class DownloadViewModel: ObservableObject {
             itemCount: savedCount,
             contentKind: resolution.contentKind,
             sourceURL: resolution.sourceURL.absoluteString,
-            previewFilename: previewFilename
+            previewFilename: previewFilename,
+            isFavorite: existingSave?.isFavorite ?? false,
+            collectionIDs: existingSave?.collectionIDs ?? [],
+            tags: existingSave?.tags ?? [],
+            note: existingSave?.note,
+            metadataUpdatedAt: existingSave?.metadataUpdatedAt
         )
         recentSaves = RecentSaveStore.upsert(save, in: recentSaves)
         persistJobs()
