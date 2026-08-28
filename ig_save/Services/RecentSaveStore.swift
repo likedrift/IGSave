@@ -92,7 +92,7 @@ enum RecentSaveStore {
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try? data.write(to: url, options: .atomic)
+        try? data.write(to: url, options: [.atomic, .completeFileProtection])
     }
 
     private static func pruneThumbnails(keeping saves: [RecentSave]) {

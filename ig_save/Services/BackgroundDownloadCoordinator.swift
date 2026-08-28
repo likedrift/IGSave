@@ -175,6 +175,10 @@ extension BackgroundDownloadCoordinator: @preconcurrency URLSessionDownloadDeleg
             )
             try? FileManager.default.removeItem(at: destinationURL)
             try FileManager.default.moveItem(at: location, to: destinationURL)
+            try FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: destinationURL.path
+            )
             finish(taskIdentifier: downloadTask.taskIdentifier, result: .success(destinationURL))
         } catch {
             finish(taskIdentifier: downloadTask.taskIdentifier, result: .failure(error))

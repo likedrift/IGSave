@@ -67,4 +67,23 @@ struct MediaDownloaderTests {
         #expect(!FileManager.default.fileExists(atPath: oversized.path))
         #expect(FileManager.default.fileExists(atPath: fresh.path))
     }
+
+    @Test("手动缓存清理只移除指定目录内容")
+    func explicitCacheCleanup() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("igsave-explicit-cache-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let first = directory.appendingPathComponent("first.media")
+        let second = directory.appendingPathComponent("second.media")
+        try Data(repeating: 1, count: 4).write(to: first)
+        try Data(repeating: 2, count: 4).write(to: second)
+
+        MediaDownloader.removeContents(of: [directory])
+
+        #expect(FileManager.default.fileExists(atPath: directory.path))
+        #expect(!FileManager.default.fileExists(atPath: first.path))
+        #expect(!FileManager.default.fileExists(atPath: second.path))
+    }
 }

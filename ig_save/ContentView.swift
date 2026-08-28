@@ -79,6 +79,7 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(
                 sessionState: viewModel.instagramSessionState,
+                isWorking: viewModel.isWorking,
                 onLogin: {
                     isShowingSettings = false
                     Task { @MainActor in
@@ -818,6 +819,7 @@ private struct PreviewAssetTile: View {
 
 private struct SettingsView: View {
     let sessionState: InstagramSessionState
+    let isWorking: Bool
     let onLogin: () -> Void
     let onLogout: () -> Void
     let onOpenSettings: () -> Void
@@ -875,6 +877,17 @@ private struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("隐私与支持") {
+                    NavigationLink {
+                        DiagnosticsView(isWorking: isWorking)
+                    } label: {
+                        LabeledContent("诊断与隐私", value: AppRuntimeInfo.versionDescription)
+                    }
+                    Text("诊断记录只保存在本机，不会自动上传。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("支持内容") {
                     Label("帖子与轮播帖子", systemImage: "rectangle.stack")
                     Label("Reels 短视频", systemImage: "play.rectangle")
@@ -899,6 +912,120 @@ private struct SettingsView: View {
         case let .connected(username): username.map { "已连接 @\($0)" } ?? "已连接"
         case .expired: "已过期"
         case .disconnected: "未连接"
+        }
+    }
+}
+
+private struct DiagnosticsView: View {
+    let isWorking: Bool
+
+    @State private var entries: [DiagnosticEntry] = []
+    @State private var cacheBytes: Int64 = 0
+    @State private var isShowingClearConfirmation = false
+
+    var body: some View {
+        Form {
+            Section("隐私") {
+                Label("不包含广告或第三方统计 SDK", systemImage: "hand.raised.fill")
+                Label("完整链接、Cookie 与登录信息不会写入诊断", systemImage: "eye.slash.fill")
+                Label("诊断数据不会自动离开这台设备", systemImage: "iphone")
+                Text("只有在你主动使用“导出诊断报告”并选择接收方后，脱敏报告才会被分享。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("诊断") {
+                LabeledContent("本机记录", value: "\(entries.count) 条")
+
+                if entries.isEmpty {
+                    Text("目前没有诊断记录。保存失败或部分成功时，这里会保留脱敏原因。")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ShareLink(item: DiagnosticStore.report(for: entries)) {
+                        Label("导出诊断报告", systemImage: "square.and.arrow.up")
+                    }
+
+                    ForEach(entries.prefix(8)) { entry in
+                        DiagnosticEntryRow(entry: entry)
+                    }
+
+                    Button("清除诊断记录", role: .destructive) {
+                        isShowingClearConfirmation = true
+                    }
+                }
+            }
+
+            Section("本机缓存") {
+                LabeledContent("已下载缓存", value: formattedCacheSize)
+                Button("清理已下载缓存") {
+                    MediaDownloader.clearCache()
+                    reload()
+                }
+                .disabled(isWorking || cacheBytes == 0)
+
+                Text(isWorking ? "保存任务运行期间暂不清理，避免影响正在写入相册的文件。" : "缓存仅用于恢复未完成任务；成功内容已经保存在系统照片图库中。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("版本") {
+                LabeledContent("IGSave", value: AppRuntimeInfo.versionDescription)
+                LabeledContent("系统", value: ProcessInfo.processInfo.operatingSystemVersionString)
+            }
+        }
+        .navigationTitle("诊断与隐私")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: reload)
+        .confirmationDialog("清除所有本机诊断记录？", isPresented: $isShowingClearConfirmation) {
+            Button("清除记录", role: .destructive) {
+                DiagnosticStore.clear()
+                reload()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("此操作不会影响保存记录和系统相册内容。")
+        }
+    }
+
+    private var formattedCacheSize: String {
+        ByteCountFormatter.string(fromByteCount: cacheBytes, countStyle: .file)
+    }
+
+    private func reload() {
+        entries = DiagnosticStore.entries()
+        cacheBytes = MediaDownloader.cacheUsageBytes()
+    }
+}
+
+private struct DiagnosticEntryRow: View {
+    let entry: DiagnosticEntry
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: entry.outcome == .success ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .foregroundStyle(entry.outcome == .success ? .green : Brand.accent)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry.category?.title ?? operationTitle)
+                    .font(.subheadline.weight(.semibold))
+                Text(entry.timestamp.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let code = entry.code {
+                    Text(code)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private var operationTitle: String {
+        switch entry.operation {
+        case "save": "保存完成"
+        case "preview": "链接预览"
+        case "profile": "账号获取"
+        default: "应用事件"
         }
     }
 }

@@ -67,6 +67,8 @@ struct SaveJobStateTests {
             successfulAssetCount: 1,
             failedAssetCount: 1,
             lastErrorMessage: "超时",
+            lastErrorCategory: .network,
+            lastErrorCode: "network.timeout",
             recentSaveID: UUID()
         )
 
@@ -98,6 +100,8 @@ struct SaveJobStateTests {
             successfulAssetCount: 2,
             failedAssetCount: 1,
             lastErrorMessage: "超时",
+            lastErrorCategory: .network,
+            lastErrorCode: "network.timeout",
             recentSaveID: UUID()
         )
 
@@ -109,6 +113,8 @@ struct SaveJobStateTests {
         #expect(job.successfulAssetCount == 2)
         #expect(job.failedAssetCount == 0)
         #expect(job.lastErrorMessage == nil)
+        #expect(job.lastErrorCategory == nil)
+        #expect(job.lastErrorCode == nil)
         #expect(job.attemptID == nil)
         #expect(job.allowsDuplicate)
         #expect(job.updatedAt == now)

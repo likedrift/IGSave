@@ -44,9 +44,21 @@ struct MediaDownloader: Sendable {
     }
 
     static func cleanCache(maximumAge: TimeInterval = 7 * 24 * 60 * 60, maximumBytes: Int64 = 500 * 1_024 * 1_024) {
-        let directories = [legacyCacheDirectoryURL(), try? BackgroundDownloadCoordinator.cacheDirectoryURL()]
-            .compactMap { $0 }
-        cleanDirectories(directories, maximumAge: maximumAge, maximumBytes: maximumBytes)
+        cleanDirectories(cacheDirectories(), maximumAge: maximumAge, maximumBytes: maximumBytes)
+    }
+
+    static func cacheUsageBytes() -> Int64 {
+        files(in: cacheDirectories()).reduce(Int64(0)) { $0 + $1.size }
+    }
+
+    static func clearCache() {
+        removeContents(of: cacheDirectories())
+    }
+
+    static func removeContents(of directories: [URL]) {
+        for file in files(in: directories) {
+            try? FileManager.default.removeItem(at: file.url)
+        }
     }
 
     static func cleanDirectories(
@@ -55,31 +67,19 @@ struct MediaDownloader: Sendable {
         maximumBytes: Int64,
         now: Date = Date()
     ) {
-        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
-        var files = directories.flatMap { directory in
-            (try? FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: Array(keys),
-                options: .skipsHiddenFiles
-            )) ?? []
-        }.compactMap { url -> (URL, Date, Int64)? in
-            guard let values = try? url.resourceValues(forKeys: keys) else {
-                return nil
-            }
-            return (url, values.contentModificationDate ?? .distantPast, Int64(values.fileSize ?? 0))
-        }
+        var files = files(in: directories)
 
         let expirationDate = now.addingTimeInterval(-maximumAge)
-        for file in files where file.1 < expirationDate {
-            try? FileManager.default.removeItem(at: file.0)
+        for file in files where file.modifiedAt < expirationDate {
+            try? FileManager.default.removeItem(at: file.url)
         }
 
-        files.removeAll { !FileManager.default.fileExists(atPath: $0.0.path) }
-        var totalBytes = files.reduce(Int64(0)) { $0 + $1.2 }
+        files.removeAll { !FileManager.default.fileExists(atPath: $0.url.path) }
+        var totalBytes = files.reduce(Int64(0)) { $0 + $1.size }
 
-        for file in files.sorted(by: { $0.1 < $1.1 }) where totalBytes > maximumBytes {
-            try? FileManager.default.removeItem(at: file.0)
-            totalBytes -= file.2
+        for file in files.sorted(by: { $0.modifiedAt < $1.modifiedAt }) where totalBytes > maximumBytes {
+            try? FileManager.default.removeItem(at: file.url)
+            totalBytes -= file.size
         }
     }
 
@@ -116,5 +116,24 @@ struct MediaDownloader: Sendable {
     private static func legacyCacheDirectoryURL() -> URL? {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("DownloadedMedia", isDirectory: true)
+    }
+
+    private static func cacheDirectories() -> [URL] {
+        [legacyCacheDirectoryURL(), try? BackgroundDownloadCoordinator.cacheDirectoryURL()]
+            .compactMap { $0 }
+    }
+
+    private static func files(in directories: [URL]) -> [(url: URL, modifiedAt: Date, size: Int64)] {
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
+        return directories.flatMap { directory in
+            (try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: Array(keys),
+                options: .skipsHiddenFiles
+            )) ?? []
+        }.compactMap { url in
+            guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
+            return (url, values.contentModificationDate ?? .distantPast, Int64(values.fileSize ?? 0))
+        }
     }
 }

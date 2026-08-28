@@ -28,7 +28,10 @@ struct ThumbnailGenerator: Sendable {
         }
 
         do {
-            try data.write(to: directory.appendingPathComponent(filename), options: .atomic)
+            try data.write(
+                to: directory.appendingPathComponent(filename),
+                options: [.atomic, .completeFileProtection]
+            )
             return filename
         } catch {
             return nil

@@ -95,6 +95,8 @@ struct SaveJob: Identifiable, Equatable, Sendable, Codable {
     var successfulAssetCount: Int?
     var failedAssetCount: Int?
     var lastErrorMessage: String?
+    var lastErrorCategory: AppErrorCategory?
+    var lastErrorCode: String?
     var recentSaveID: UUID?
     var updatedAt: Date?
 
@@ -115,6 +117,8 @@ struct SaveJob: Identifiable, Equatable, Sendable, Codable {
         successfulAssetCount: Int? = nil,
         failedAssetCount: Int? = nil,
         lastErrorMessage: String? = nil,
+        lastErrorCategory: AppErrorCategory? = nil,
+        lastErrorCode: String? = nil,
         recentSaveID: UUID? = nil,
         updatedAt: Date? = nil
     ) {
@@ -134,6 +138,8 @@ struct SaveJob: Identifiable, Equatable, Sendable, Codable {
         self.successfulAssetCount = successfulAssetCount
         self.failedAssetCount = failedAssetCount
         self.lastErrorMessage = lastErrorMessage
+        self.lastErrorCategory = lastErrorCategory
+        self.lastErrorCode = lastErrorCode
         self.recentSaveID = recentSaveID
         self.updatedAt = updatedAt
     }
@@ -156,6 +162,8 @@ struct SaveJob: Identifiable, Equatable, Sendable, Codable {
         failedAssets = []
         failedAssetCount = 0
         lastErrorMessage = nil
+        lastErrorCategory = nil
+        lastErrorCode = nil
         attemptID = nil
         status = .queued
         allowsDuplicate = forceDuplicate || allowsDuplicate

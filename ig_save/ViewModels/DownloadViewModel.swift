@@ -107,7 +107,9 @@ final class DownloadViewModel: ObservableObject {
                 isShowingPreview = true
                 inputText = ""
             } catch {
-                previewError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let descriptor = AppErrorClassifier.classify(error)
+                previewError = descriptor.displayMessage
+                DiagnosticStore.record(operation: "preview", outcome: .failure, error: descriptor)
             }
             isPreparingPreview = false
         }
@@ -182,7 +184,9 @@ final class DownloadViewModel: ObservableObject {
                 profilePosts = posts
                 updateFavoriteSnapshot(for: username, posts: posts)
             } catch {
-                profileError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let descriptor = AppErrorClassifier.classify(error)
+                profileError = descriptor.displayMessage
+                DiagnosticStore.record(operation: "profile", outcome: .failure, error: descriptor)
             }
 
             isLoadingProfile = false
@@ -537,9 +541,9 @@ final class DownloadViewModel: ObservableObject {
         } catch is CancellationError {
             update(jobID, status: .cancelled, attemptID: attemptID)
         } catch {
-            let message = errorMessage(for: error)
-            setAttemptError(jobID, attemptID: attemptID, message: message)
-            finalize(jobID, attemptID: attemptID, fallbackError: message)
+            let descriptor = AppErrorClassifier.classify(error)
+            setAttemptError(jobID, attemptID: attemptID, error: descriptor)
+            finalize(jobID, attemptID: attemptID, fallbackError: descriptor.displayMessage)
         }
     }
 
@@ -606,15 +610,15 @@ final class DownloadViewModel: ObservableObject {
                             jobID,
                             attemptID: attemptID,
                             asset: asset,
-                            message: errorMessage(for: error)
+                            error: AppErrorClassifier.classify(error)
                         )
                     }
-                case let .failed(asset, message):
+                case let .failed(asset, error):
                     recordAssetFailure(
                         jobID,
                         attemptID: attemptID,
                         asset: asset,
-                        message: message
+                        error: error
                     )
                 }
 
@@ -661,8 +665,7 @@ final class DownloadViewModel: ObservableObject {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            return .failed(asset: asset, message: message)
+            return .failed(asset: asset, error: AppErrorClassifier.classify(error))
         }
     }
 
@@ -731,6 +734,8 @@ final class DownloadViewModel: ObservableObject {
             jobs[index].successfulAssetCount = jobs[index].successfulAssetCount ?? 0
             jobs[index].failedAssetCount = 0
             jobs[index].lastErrorMessage = nil
+            jobs[index].lastErrorCategory = nil
+            jobs[index].lastErrorCode = nil
         }
         jobs[index].updatedAt = Date()
         persistJobs()
@@ -740,7 +745,7 @@ final class DownloadViewModel: ObservableObject {
         _ id: UUID,
         attemptID: UUID,
         asset: MediaAsset,
-        message: String
+        error: AppErrorDescriptor
     ) {
         guard let index = jobs.firstIndex(where: { $0.id == id }),
               jobs[index].attemptID == attemptID else {
@@ -751,7 +756,9 @@ final class DownloadViewModel: ObservableObject {
         jobs[index].pendingAssets?.removeFirst(descriptor)
         jobs[index].failedAssets = (jobs[index].failedAssets ?? []) + [descriptor]
         jobs[index].failedAssetCount = (jobs[index].failedAssetCount ?? 0) + 1
-        jobs[index].lastErrorMessage = message
+        jobs[index].lastErrorMessage = error.displayMessage
+        jobs[index].lastErrorCategory = error.category
+        jobs[index].lastErrorCode = error.code
         jobs[index].updatedAt = Date()
         persistJobs()
     }
@@ -802,13 +809,15 @@ final class DownloadViewModel: ObservableObject {
         persistJobs()
     }
 
-    private func setAttemptError(_ id: UUID, attemptID: UUID, message: String) {
+    private func setAttemptError(_ id: UUID, attemptID: UUID, error: AppErrorDescriptor) {
         guard let index = jobs.firstIndex(where: { $0.id == id }),
               jobs[index].attemptID == attemptID else {
             return
         }
 
-        jobs[index].lastErrorMessage = message
+        jobs[index].lastErrorMessage = error.displayMessage
+        jobs[index].lastErrorCategory = error.category
+        jobs[index].lastErrorCode = error.code
         jobs[index].updatedAt = Date()
         persistJobs()
     }
@@ -836,6 +845,8 @@ final class DownloadViewModel: ObservableObject {
         case .saved:
             jobs[index].failedAssets = []
             jobs[index].lastErrorMessage = nil
+            jobs[index].lastErrorCategory = nil
+            jobs[index].lastErrorCode = nil
             HapticFeedback.success()
         case .partiallySaved:
             HapticFeedback.warning()
@@ -845,12 +856,32 @@ final class DownloadViewModel: ObservableObject {
             break
         }
         jobs[index].updatedAt = Date()
+        let diagnosticError = jobs[index].lastErrorCategory.map { category in
+            AppErrorDescriptor(
+                category: category,
+                code: jobs[index].lastErrorCode ?? "unknown",
+                message: jobs[index].lastErrorMessage ?? message,
+                recoverySuggestion: ""
+            )
+        }
+        let diagnosticOutcome: DiagnosticOutcome = switch terminalStatus {
+        case .saved: .success
+        case .partiallySaved: .partial
+        case .failed: .failure
+        case .idle, .queued, .resolving, .downloading, .saving, .cancelling, .duplicate, .cancelled: .failure
+        }
+        DiagnosticStore.record(
+            operation: "save",
+            outcome: diagnosticOutcome,
+            error: diagnosticError,
+            context: [
+                "content_kind": jobs[index].contentKind?.rawValue ?? "unknown",
+                "saved_count": String(savedCount),
+                "failed_count": String(failureCount)
+            ]
+        )
         persistJobs()
         removeSupersededTerminalJobs(keeping: id)
-    }
-
-    private func errorMessage(for error: Error) -> String {
-        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
     private func persistJobs() {
@@ -981,7 +1012,7 @@ private enum SaveJobError: LocalizedError {
 
 private enum AssetDownloadOutcome: Sendable {
     case downloaded(asset: MediaAsset, fileURL: URL)
-    case failed(asset: MediaAsset, message: String)
+    case failed(asset: MediaAsset, error: AppErrorDescriptor)
 }
 
 private extension Array where Element: Equatable {
