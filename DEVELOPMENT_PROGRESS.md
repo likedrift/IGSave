@@ -192,6 +192,16 @@ Build a personal-use iOS app that accepts a pasted Instagram link and saves the 
 - Replaced fixed primary-action heights with Dynamic Type-safe minimum sizing.
 - Added automated onboarding policy coverage and performed fresh-install simulator visual QA.
 
+### 2026-08-30 - Phase 10: Release Candidate Hardening
+
+- Set the first complete release candidate to version `1.0.0 (10)` for both the app and Share Extension.
+- Declared that the app does not use non-exempt encryption, while continuing to use standard system HTTPS transport.
+- Validated all property lists, privacy manifests, App Group entitlements, app icons, and target signing settings.
+- Completed warning-free Release static analysis and generated a signed Xcode Archive with its embedded Share Extension.
+- Verified matching archive versions, privacy manifests, App Intents metadata, and strict code signatures.
+- Passed all 33 automated tests on both iOS 26.4 and iOS 26.5 simulator runtimes.
+- Installed the archived release candidate on an iOS 27.0 iPhone 16 Pro for final acceptance.
+
 ## Next Tasks
 
 - Validate full build in Xcode.

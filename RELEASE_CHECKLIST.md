@@ -1,9 +1,25 @@
 # IGSave 发布检查清单
 
+## 1.0.0 (10) 自动验证记录
+
+- [x] 主 App 与分享扩展版本统一为 `1.0.0 (10)`。
+- [x] Info.plist、Entitlements 与两份 PrivacyInfo.xcprivacy 语法检查通过。
+- [x] iOS 26.4 与 iOS 26.5 模拟器均通过 33 项自动化测试。
+- [x] Release 静态分析通过，无编译器警告或错误。
+- [x] Release Archive 成功，并通过 Store 浅层包验证与分享扩展嵌入验证。
+- [x] 归档内主 App、分享扩展的版本、App Group、隐私清单和开发团队一致。
+- [x] 主 App 与分享扩展的归档签名均通过严格校验。
+- [x] 主 App 的 App Intents 元数据及快捷指令语言训练资源已生成。
+- [x] 候选版已安装到 iOS 27.0 的 iPhone 16 Pro。
+- [ ] 在 Xcode Organizer 使用正式分发身份执行 Validate App。
+- [ ] 在真机完成下方核心流程的人工回归。
+
+> Xcode 26.5 会对不包含 App Intents 的分享扩展执行一次空元数据提取，并输出“未找到 AppIntents.framework、已跳过”的工具链提示。主 App 的 App Intents 元数据已正常生成，此提示不影响归档、扩展或快捷指令。
+
 ## 构建与签名
 
-- [ ] 更新 `MARKETING_VERSION` 与 `CURRENT_PROJECT_VERSION`。
-- [ ] 主 App、分享扩展和 App Group 使用同一开发团队及有效签名。
+- [x] 更新 `MARKETING_VERSION` 与 `CURRENT_PROJECT_VERSION`。
+- [x] 主 App、分享扩展和 App Group 使用同一开发团队及有效签名。
 - [ ] Release 构建无编译警告，Archive 和 Validate App 成功。
 - [ ] 在最低支持系统与当前系统各完成一次真机启动。
 
