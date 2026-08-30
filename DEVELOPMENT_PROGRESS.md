@@ -183,6 +183,15 @@ Build a personal-use iOS app that accepts a pasted Instagram link and saves the 
 - Added bilingual-safe Chinese empty states, consistent Reel/Reels naming, meaningful haptic feedback, batch summaries, and optional local completion notifications.
 - Verified clean Debug and Release iOS builds and performed simulator visual QA for the save queue and recent-save layouts.
 
+### 2026-08-30 - Phase 9: First-Run Guidance And Interaction Preferences
+
+- Added a concise first-run guide for new installations covering the Instagram share path, persistent task queue, and local media organization.
+- Existing users with saved media, tasks, or followed profiles are migrated without an interrupting onboarding sheet.
+- Added a permanent IGSave usage guide inside Settings.
+- Added an opt-out preference for haptic feedback and applied it across selection, success, and warning interactions.
+- Replaced fixed primary-action heights with Dynamic Type-safe minimum sizing.
+- Added automated onboarding policy coverage and performed fresh-install simulator visual QA.
+
 ## Next Tasks
 
 - Validate full build in Xcode.

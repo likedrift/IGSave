@@ -25,6 +25,9 @@ struct ContentView: View {
     @State private var isSelectingRecentSaves = false
     @State private var selectedRecentSaveIDs: Set<UUID> = []
     @State private var isShowingBatchDeleteConfirmation = false
+    @State private var isShowingOnboarding = false
+    @State private var didEvaluateOnboarding = false
+    @AppStorage(AppPreferences.onboardingVersionKey) private var onboardingVersion = 0
     @FocusState private var isInputFocused: Bool
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
@@ -86,6 +89,7 @@ struct ContentView: View {
         .task {
             await viewModel.refreshInstagramSessionStatus()
             viewModel.resumePendingJobs()
+            evaluateOnboardingIfNeeded()
         }
         .sheet(
             isPresented: $viewModel.isShowingInstagramLogin,
@@ -124,6 +128,16 @@ struct ContentView: View {
                 onLogout: viewModel.logoutInstagram,
                 onOpenSettings: viewModel.openAppSettings
             )
+        }
+        .sheet(isPresented: $isShowingOnboarding) {
+            NavigationStack {
+                IGSaveGuideView(isOnboarding: true) {
+                    onboardingVersion = AppPreferences.currentOnboardingVersion
+                    isShowingOnboarding = false
+                    HapticFeedback.success()
+                }
+            }
+            .interactiveDismissDisabled()
         }
         .sheet(isPresented: $isShowingCollectionManager) {
             CollectionManagerView(
@@ -173,6 +187,24 @@ struct ContentView: View {
                     selectedRecentSave = nil
                 }
             )
+        }
+    }
+
+    private func evaluateOnboardingIfNeeded() {
+        guard !didEvaluateOnboarding else { return }
+        didEvaluateOnboarding = true
+
+        let hasExistingContent = !viewModel.recentSaves.isEmpty
+            || !viewModel.jobs.isEmpty
+            || !viewModel.favoriteProfiles.isEmpty
+
+        if AppPreferences.shouldPresentOnboarding(
+            storedVersion: onboardingVersion,
+            hasExistingContent: hasExistingContent
+        ) {
+            isShowingOnboarding = true
+        } else if onboardingVersion < AppPreferences.currentOnboardingVersion {
+            onboardingVersion = AppPreferences.currentOnboardingVersion
         }
     }
 
@@ -786,7 +818,8 @@ struct ContentView: View {
                     } label: {
                         Label("粘贴", systemImage: "doc.on.clipboard")
                             .font(.subheadline.weight(.semibold))
-                            .frame(width: 86, height: 48)
+                            .frame(width: 86)
+                            .frame(minHeight: 48)
                     }
                     .buttonStyle(.glass)
 
@@ -805,7 +838,7 @@ struct ContentView: View {
                         }
                         .font(.headline)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 48)
+                        .frame(minHeight: 48)
                     }
                     .buttonStyle(.glassProminent)
                     .tint(Brand.accent)
@@ -858,7 +891,7 @@ struct ContentView: View {
                 .accessibilityLabel(viewModel.isCurrentProfileFavorite ? "取消关注账号" : "关注账号")
             }
             .padding(.horizontal, 16)
-            .frame(height: 56)
+            .frame(minHeight: 56)
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
             if let profileError = viewModel.profileError {
@@ -884,7 +917,7 @@ struct ContentView: View {
                 }
                 .font(.headline)
                 .frame(maxWidth: .infinity)
-                .frame(height: 48)
+                .frame(minHeight: 48)
             }
             .buttonStyle(.glassProminent)
             .tint(Brand.accent)
@@ -1090,7 +1123,7 @@ struct ContentView: View {
                     }
                     .font(.headline)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 48)
+                    .frame(minHeight: 48)
                 }
                 .buttonStyle(.glassProminent)
                 .tint(Brand.accent)
@@ -1273,7 +1306,7 @@ private struct MediaPreviewView: View {
                     Label("保存已选（\(selectedAssetIDs.count)）", systemImage: "arrow.down.to.line")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 50)
+                        .frame(minHeight: 50)
                 }
                 .buttonStyle(.glassProminent)
                 .tint(Brand.accent)
@@ -1346,6 +1379,161 @@ private struct PreviewAssetTile: View {
     }
 }
 
+private struct IGSaveGuideView: View {
+    let isOnboarding: Bool
+    let onFinish: (() -> Void)?
+
+    init(isOnboarding: Bool, onFinish: (() -> Void)? = nil) {
+        self.isOnboarding = isOnboarding
+        self.onFinish = onFinish
+    }
+
+    var body: some View {
+        ZStack {
+            AppBackdrop()
+
+            ScrollView {
+                VStack(spacing: 22) {
+                    guideHeader
+
+                    VStack(spacing: 12) {
+                        GuideStepRow(
+                            number: 1,
+                            systemImage: "square.and.arrow.up",
+                            title: "从 Instagram 分享",
+                            detail: "打开帖子、Reel 或快拍，依次选择“分享 → 更多 → IGSave”。"
+                        )
+                        GuideStepRow(
+                            number: 2,
+                            systemImage: "checklist",
+                            title: "确认并交给任务队列",
+                            detail: "选择轮播中想保存的内容后即可离开；下载状态会持续保留，也可以随时重试。"
+                        )
+                        GuideStepRow(
+                            number: 3,
+                            systemImage: "square.stack.3d.up",
+                            title: "在媒体库整理",
+                            detail: "全屏查看已保存内容，并使用收藏、收藏夹、标签和备注完成整理。"
+                        )
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("另一种保存方式", systemImage: "link")
+                            .font(.headline)
+                            .foregroundStyle(Brand.accent)
+
+                        Text("也可以直接在“保存”页面粘贴链接。查看快拍或获取指定账号内容时，需要先连接你自己的 Instagram 登录状态。")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(18)
+                    .surfaceCard(radius: 22)
+
+                    Label(
+                        "内容只保存在这台设备，不会自动上传诊断、链接或登录信息。",
+                        systemImage: "hand.raised.fill"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+
+                    if let onFinish {
+                        GlassEffectContainer(spacing: 0) {
+                            Button(action: onFinish) {
+                                Label("开始使用 IGSave", systemImage: "arrow.right")
+                                    .font(.headline)
+                                    .frame(maxWidth: .infinity)
+                                    .frame(minHeight: 50)
+                            }
+                            .buttonStyle(.glassProminent)
+                            .tint(Brand.accent)
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, isOnboarding ? 30 : 18)
+                .padding(.bottom, 32)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .navigationTitle(isOnboarding ? "欢迎使用" : "使用指南")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var guideHeader: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "square.and.arrow.down.fill")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 72, height: 72)
+                .background(Brand.accent, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .shadow(color: Brand.accent.opacity(0.22), radius: 16, y: 7)
+                .accessibilityHidden(true)
+
+            VStack(spacing: 7) {
+                Text("保存、整理、随时查看")
+                    .font(.title2.weight(.bold))
+
+                Text("IGSave 把 Instagram 中你有权访问的内容，安静地保存到系统照片图库。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 10)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct GuideStepRow: View {
+    let number: Int
+    let systemImage: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 15) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(Brand.accent)
+                    .frame(width: 48, height: 48)
+                    .background(Brand.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+
+                Text("\(number)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20)
+                    .background(Brand.accent, in: Circle())
+                    .offset(x: 6, y: -6)
+            }
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.headline)
+
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .surfaceCard(radius: 22)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("第 \(number) 步，\(title)，\(detail)")
+    }
+}
+
 private struct SettingsView: View {
     let sessionState: InstagramSessionState
     let isWorking: Bool
@@ -1359,6 +1547,7 @@ private struct SettingsView: View {
     @AppStorage(AppPreferences.duplicateProtectionKey) private var protectsAgainstDuplicates = true
     @AppStorage(AppPreferences.cellularDownloadsKey) private var allowsCellularDownloads = true
     @AppStorage(AppPreferences.completionNotificationsKey) private var completionNotifications = true
+    @AppStorage(AppPreferences.hapticFeedbackKey) private var hapticFeedback = true
 
     var body: some View {
         NavigationStack {
@@ -1390,6 +1579,13 @@ private struct SettingsView: View {
                     }
                 }
 
+                Section("交互") {
+                    Toggle("触感反馈", isOn: $hapticFeedback)
+                    Text("保存成功、选择内容和需要注意的状态会使用轻微触感反馈。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Instagram 账号") {
                     LabeledContent("状态", value: sessionDescription)
                     if sessionState.isConnected {
@@ -1407,6 +1603,12 @@ private struct SettingsView: View {
                 }
 
                 Section("隐私与支持") {
+                    NavigationLink {
+                        IGSaveGuideView(isOnboarding: false)
+                    } label: {
+                        Label("IGSave 使用指南", systemImage: "questionmark.circle")
+                    }
+
                     NavigationLink {
                         DiagnosticsView(isWorking: isWorking)
                     } label: {
