@@ -57,6 +57,14 @@ enum RecentSaveStore {
         return nextSaves
     }
 
+    static func remove(ids: Set<UUID>, from saves: [RecentSave]) -> [RecentSave] {
+        guard !ids.isEmpty else { return saves }
+        let nextSaves = saves.filter { !ids.contains($0.id) }
+        persist(nextSaves)
+        pruneThumbnails(keeping: nextSaves)
+        return nextSaves
+    }
+
     static func removeAll(from saves: [RecentSave]) -> [RecentSave] {
         persist([])
         pruneThumbnails(keeping: [])
@@ -92,6 +100,52 @@ enum RecentSaveStore {
         for index in updated.indices where updated[index].collectionIDs.contains(collectionID) {
             updated[index].collectionIDs.removeAll { $0 == collectionID }
             updated[index].metadataUpdatedAt = Date()
+            didChange = true
+        }
+
+        if didChange {
+            persist(updated)
+        }
+        return updated
+    }
+
+    static func setFavorite(
+        _ isFavorite: Bool,
+        for saveIDs: Set<UUID>,
+        in saves: [RecentSave],
+        now: Date = Date()
+    ) -> [RecentSave] {
+        guard !saveIDs.isEmpty else { return saves }
+        var updated = saves
+        var didChange = false
+
+        for index in updated.indices
+        where saveIDs.contains(updated[index].id) && updated[index].isFavorite != isFavorite {
+            updated[index].isFavorite = isFavorite
+            updated[index].metadataUpdatedAt = now
+            didChange = true
+        }
+
+        if didChange {
+            persist(updated)
+        }
+        return updated
+    }
+
+    static func addToCollection(
+        _ collectionID: UUID,
+        saveIDs: Set<UUID>,
+        in saves: [RecentSave],
+        now: Date = Date()
+    ) -> [RecentSave] {
+        guard !saveIDs.isEmpty else { return saves }
+        var updated = saves
+        var didChange = false
+
+        for index in updated.indices
+        where saveIDs.contains(updated[index].id) && !updated[index].collectionIDs.contains(collectionID) {
+            updated[index].collectionIDs.append(collectionID)
+            updated[index].metadataUpdatedAt = now
             didChange = true
         }
 

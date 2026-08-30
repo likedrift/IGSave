@@ -19,10 +19,29 @@ struct MediaLibraryTests {
         let decoded = try JSONDecoder().decode(RecentSave.self, from: data)
 
         #expect(!decoded.isFavorite)
+        #expect(decoded.photoLibraryAssetIDs.isEmpty)
         #expect(decoded.collectionIDs.isEmpty)
         #expect(decoded.tags.isEmpty)
         #expect(decoded.note == nil)
         #expect(decoded.metadataUpdatedAt == nil)
+    }
+
+    @Test("系统照片标识会按保存顺序持久化")
+    func persistsPhotoLibraryAssetIdentifiers() throws {
+        let identifiers = ["image-id/L0/001", "video-id/L0/002"]
+        let save = RecentSave(
+            username: "@example",
+            itemCount: 2,
+            contentKind: .post,
+            sourceURL: "https://instagram.com/p/example",
+            previewFilename: "preview.jpg",
+            photoLibraryAssetIDs: identifiers
+        )
+
+        let data = try JSONEncoder().encode(save)
+        let decoded = try JSONDecoder().decode(RecentSave.self, from: data)
+
+        #expect(decoded.photoLibraryAssetIDs == identifiers)
     }
 
     @Test("整理信息更新保持原顺序并规范化标签")
@@ -103,6 +122,63 @@ struct MediaLibraryTests {
         #expect(renamed.first?.name.count == 30)
 
         _ = MediaCollectionStore.remove(collection, from: renamed)
+    }
+
+    @Test("批量收藏和加入收藏夹只影响选中记录")
+    func batchOrganizesSelectedSaves() throws {
+        let first = RecentSave(
+            username: "@first",
+            itemCount: 1,
+            contentKind: .post,
+            sourceURL: "https://instagram.com/p/first",
+            previewFilename: nil
+        )
+        let second = RecentSave(
+            username: "@second",
+            itemCount: 1,
+            contentKind: .reel,
+            sourceURL: "https://instagram.com/reel/second",
+            previewFilename: nil
+        )
+        let collectionID = UUID()
+        let selectedIDs: Set<UUID> = [second.id]
+        let now = Date(timeIntervalSinceReferenceDate: 789)
+
+        let favorited = RecentSaveStore.setFavorite(
+            true,
+            for: selectedIDs,
+            in: [first, second],
+            now: now
+        )
+        let organized = RecentSaveStore.addToCollection(
+            collectionID,
+            saveIDs: selectedIDs,
+            in: favorited,
+            now: now
+        )
+
+        #expect(!organized[0].isFavorite)
+        #expect(organized[0].collectionIDs.isEmpty)
+        #expect(organized[1].isFavorite)
+        #expect(organized[1].collectionIDs == [collectionID])
+        #expect(organized[1].metadataUpdatedAt == now)
+    }
+
+    @Test("批量删除保留未选中的记录顺序")
+    func batchDeletesSelectedSaves() {
+        let saves = (0..<3).map { index in
+            RecentSave(
+                username: "@\(index)",
+                itemCount: 1,
+                contentKind: .post,
+                sourceURL: "https://instagram.com/p/\(index)",
+                previewFilename: nil
+            )
+        }
+
+        let updated = RecentSaveStore.remove(ids: [saves[1].id], from: saves)
+
+        #expect(updated.map(\.id) == [saves[0].id, saves[2].id])
     }
 }
 

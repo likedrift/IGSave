@@ -408,6 +408,25 @@ final class DownloadViewModel: ObservableObject {
         HapticFeedback.selection()
     }
 
+    func deleteRecentSaves(ids: Set<UUID>) {
+        recentSaves = RecentSaveStore.remove(ids: ids, from: recentSaves)
+        HapticFeedback.selection()
+    }
+
+    func setRecentSavesFavorite(ids: Set<UUID>, isFavorite: Bool) {
+        recentSaves = RecentSaveStore.setFavorite(isFavorite, for: ids, in: recentSaves)
+        HapticFeedback.selection()
+    }
+
+    func addRecentSaves(ids: Set<UUID>, to collectionID: UUID) {
+        recentSaves = RecentSaveStore.addToCollection(
+            collectionID,
+            saveIDs: ids,
+            in: recentSaves
+        )
+        HapticFeedback.selection()
+    }
+
     func clearRecentSaves() {
         recentSaves = RecentSaveStore.removeAll(from: recentSaves)
     }
@@ -752,7 +771,7 @@ final class DownloadViewModel: ObservableObject {
                     )
 
                     do {
-                        try await saver.save(
+                        let photoLibraryAssetID = try await saver.save(
                             fileURL: fileURL,
                             kind: asset.kind,
                             albumName: AppPreferences.usesDedicatedAlbum ? AppPreferences.dedicatedAlbumName : nil
@@ -762,6 +781,7 @@ final class DownloadViewModel: ObservableObject {
                             attemptID: attemptID,
                             asset: asset,
                             fileURL: fileURL,
+                            photoLibraryAssetID: photoLibraryAssetID,
                             input: input,
                             resolution: resolution
                         )
@@ -930,6 +950,7 @@ final class DownloadViewModel: ObservableObject {
         attemptID: UUID,
         asset: MediaAsset,
         fileURL: URL,
+        photoLibraryAssetID: String,
         input: String,
         resolution: MediaResolution
     ) async {
@@ -958,6 +979,11 @@ final class DownloadViewModel: ObservableObject {
         jobs[index].recentSaveID = recentSaveID
         jobs[index].updatedAt = Date()
 
+        var photoLibraryAssetIDs = existingSave?.photoLibraryAssetIDs ?? []
+        if !photoLibraryAssetIDs.contains(photoLibraryAssetID) {
+            photoLibraryAssetIDs.append(photoLibraryAssetID)
+        }
+
         let save = RecentSave(
             id: recentSaveID,
             username: displayUsername(from: resolution, input: input),
@@ -966,6 +992,7 @@ final class DownloadViewModel: ObservableObject {
             contentKind: resolution.contentKind,
             sourceURL: resolution.sourceURL.absoluteString,
             previewFilename: previewFilename,
+            photoLibraryAssetIDs: photoLibraryAssetIDs,
             isFavorite: existingSave?.isFavorite ?? false,
             collectionIDs: existingSave?.collectionIDs ?? [],
             tags: existingSave?.tags ?? [],

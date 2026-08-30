@@ -38,7 +38,7 @@
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>用于把下载的图片和视频保存到系统相册。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>用于把保存的内容整理到 IGSave 相册。</string>
+	<string>用于在 IGSave 中查看已保存的原图、播放视频，并整理到专用相册。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

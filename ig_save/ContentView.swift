@@ -22,6 +22,9 @@ struct ContentView: View {
     @State private var isShowingClearLibraryConfirmation = false
     @State private var isShowingTaskQueue = false
     @State private var selectedRecentSave: RecentSave?
+    @State private var isSelectingRecentSaves = false
+    @State private var selectedRecentSaveIDs: Set<UUID> = []
+    @State private var isShowingBatchDeleteConfirmation = false
     @FocusState private var isInputFocused: Bool
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
@@ -58,6 +61,12 @@ struct ContentView: View {
         .onChange(of: profileContentFilter) { _, filter in
             if filter == .story {
                 profileShowsOnlyNewContent = false
+            }
+        }
+        .onChange(of: viewModel.recentSaves.map(\.id)) { _, currentIDs in
+            selectedRecentSaveIDs.formIntersection(currentIDs)
+            if currentIDs.isEmpty {
+                endRecentSaveSelection()
             }
         }
         .onOpenURL { url in
@@ -201,6 +210,8 @@ struct ContentView: View {
                     } label: {
                         Image(systemName: viewModel.hasInstagramSession ? "checkmark.circle.fill" : "person.crop.circle")
                             .foregroundStyle(viewModel.hasInstagramSession ? Brand.success : Color.primary)
+                            .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                            .symbolEffect(.bounce, value: viewModel.hasInstagramSession)
                     }
                     .accessibilityLabel(viewModel.hasInstagramSession ? "Instagram 已登录" : "登录 Instagram")
                 }
@@ -239,6 +250,8 @@ struct ContentView: View {
                     } label: {
                         Image(systemName: viewModel.hasInstagramSession ? "checkmark.circle.fill" : "person.crop.circle")
                             .foregroundStyle(viewModel.hasInstagramSession ? Brand.success : Color.primary)
+                            .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                            .symbolEffect(.bounce, value: viewModel.hasInstagramSession)
                     }
                     .accessibilityLabel(viewModel.hasInstagramSession ? "Instagram 已登录" : "登录 Instagram")
                 }
@@ -287,7 +300,12 @@ struct ContentView: View {
                                                 RecentSaveRow(
                                                     save: save,
                                                     collections: viewModel.mediaCollections,
+                                                    isSelectionMode: isSelectingRecentSaves,
+                                                    isSelected: selectedRecentSaveIDs.contains(save.id),
                                                     onSelect: { selectedRecentSave = save },
+                                                    onToggleSelection: {
+                                                        toggleRecentSaveSelection(save)
+                                                    },
                                                     onToggleFavorite: {
                                                         _ = viewModel.toggleFavorite(save)
                                                     },
@@ -324,23 +342,54 @@ struct ContentView: View {
                 text: $recentSearchText
             )
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Label("\(viewModel.recentSaves.count) 条媒体记录", systemImage: "photo.stack")
-                        Button("管理收藏夹", systemImage: "folder.badge.gearshape") {
-                            isShowingCollectionManager = true
+                if isSelectingRecentSaves {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("取消") {
+                            endRecentSaveSelection()
                         }
-                        Divider()
-                        Button("清空全部记录", role: .destructive) {
-                            isShowingClearLibraryConfirmation = true
-                        }
-                        .disabled(viewModel.recentSaves.isEmpty)
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
                     }
-                    .accessibilityLabel("媒体库菜单")
+
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(allFilteredRecentSavesSelected ? "取消全选" : "全选") {
+                            toggleAllFilteredRecentSaves()
+                        }
+                    }
+                } else {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button {
+                            beginRecentSaveSelection()
+                        } label: {
+                            Image(systemName: "checkmark.circle")
+                        }
+                        .disabled(filteredRecentSaves.isEmpty)
+                        .accessibilityLabel("选择媒体记录")
+
+                        Menu {
+                            Label("\(viewModel.recentSaves.count) 条媒体记录", systemImage: "photo.stack")
+                            Button("管理收藏夹", systemImage: "folder.badge.gearshape") {
+                                isShowingCollectionManager = true
+                            }
+                            Divider()
+                            Button("清空全部记录", role: .destructive) {
+                                isShowingClearLibraryConfirmation = true
+                            }
+                            .disabled(viewModel.recentSaves.isEmpty)
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .accessibilityLabel("媒体库菜单")
+                    }
                 }
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if isSelectingRecentSaves {
+                    recentSaveBatchBar
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy, value: isSelectingRecentSaves)
             .confirmationDialog(
                 "清空全部媒体库记录？",
                 isPresented: $isShowingClearLibraryConfirmation
@@ -354,7 +403,130 @@ struct ContentView: View {
             } message: {
                 Text("系统照片不会被删除，但标签、备注和收藏关系会随记录一同移除。")
             }
+            .confirmationDialog(
+                "删除选中的 \(selectedRecentSaveIDs.count) 条记录？",
+                isPresented: $isShowingBatchDeleteConfirmation
+            ) {
+                Button("删除记录", role: .destructive) {
+                    viewModel.deleteRecentSaves(ids: selectedRecentSaveIDs)
+                    endRecentSaveSelection()
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("只会删除 IGSave 内的记录和整理信息，不会删除系统照片。")
+            }
         }
+    }
+
+    private var selectedRecentSaves: [RecentSave] {
+        viewModel.recentSaves.filter { selectedRecentSaveIDs.contains($0.id) }
+    }
+
+    private var allFilteredRecentSavesSelected: Bool {
+        let filteredIDs = Set(filteredRecentSaves.map(\.id))
+        return !filteredIDs.isEmpty && filteredIDs.isSubset(of: selectedRecentSaveIDs)
+    }
+
+    private var selectedRecentSavesAreAllFavorite: Bool {
+        !selectedRecentSaves.isEmpty && selectedRecentSaves.allSatisfy(\.isFavorite)
+    }
+
+    private var recentSaveBatchBar: some View {
+        GlassEffectContainer(spacing: 10) {
+            HStack(spacing: 10) {
+                Text("已选 \(selectedRecentSaveIDs.count) 项")
+                    .font(.subheadline.weight(.semibold))
+                    .contentTransition(.numericText())
+
+                Spacer(minLength: 8)
+
+                Button {
+                    viewModel.setRecentSavesFavorite(
+                        ids: selectedRecentSaveIDs,
+                        isFavorite: !selectedRecentSavesAreAllFavorite
+                    )
+                } label: {
+                    Image(systemName: selectedRecentSavesAreAllFavorite ? "star.slash" : "star.fill")
+                        .frame(width: 36, height: 36)
+                        .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                }
+                .buttonStyle(.glassProminent)
+                .tint(Brand.accent)
+                .disabled(selectedRecentSaveIDs.isEmpty)
+                .accessibilityLabel(selectedRecentSavesAreAllFavorite ? "取消收藏" : "加入收藏")
+
+                Menu {
+                    if viewModel.mediaCollections.isEmpty {
+                        Button("创建收藏夹", systemImage: "folder.badge.plus") {
+                            isShowingCollectionManager = true
+                        }
+                    } else {
+                        ForEach(viewModel.mediaCollections) { collection in
+                            Button(collection.name, systemImage: "folder") {
+                                viewModel.addRecentSaves(
+                                    ids: selectedRecentSaveIDs,
+                                    to: collection.id
+                                )
+                            }
+                        }
+                        Divider()
+                        Button("管理收藏夹", systemImage: "folder.badge.gearshape") {
+                            isShowingCollectionManager = true
+                        }
+                    }
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.glass)
+                .disabled(selectedRecentSaveIDs.isEmpty)
+                .accessibilityLabel("加入收藏夹")
+
+                Button(role: .destructive) {
+                    isShowingBatchDeleteConfirmation = true
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.glass)
+                .tint(Brand.danger)
+                .disabled(selectedRecentSaveIDs.isEmpty)
+                .accessibilityLabel("删除选中记录")
+            }
+        }
+    }
+
+    private func beginRecentSaveSelection() {
+        withAnimation(.snappy) {
+            isSelectingRecentSaves = true
+            selectedRecentSaveIDs = []
+        }
+    }
+
+    private func endRecentSaveSelection() {
+        withAnimation(.snappy) {
+            isSelectingRecentSaves = false
+            selectedRecentSaveIDs = []
+        }
+    }
+
+    private func toggleRecentSaveSelection(_ save: RecentSave) {
+        if selectedRecentSaveIDs.contains(save.id) {
+            selectedRecentSaveIDs.remove(save.id)
+        } else {
+            selectedRecentSaveIDs.insert(save.id)
+        }
+        HapticFeedback.selection()
+    }
+
+    private func toggleAllFilteredRecentSaves() {
+        let filteredIDs = Set(filteredRecentSaves.map(\.id))
+        if filteredIDs.isSubset(of: selectedRecentSaveIDs) {
+            selectedRecentSaveIDs.subtract(filteredIDs)
+        } else {
+            selectedRecentSaveIDs.formUnion(filteredIDs)
+        }
+        HapticFeedback.selection()
     }
 
     private var filteredRecentSaves: [RecentSave] {
@@ -534,6 +706,8 @@ struct ContentView: View {
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(viewModel.hasInstagramSession ? Brand.success : Brand.accent)
                     .frame(width: 22)
+                    .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                    .symbolEffect(.bounce, value: viewModel.hasInstagramSession)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(viewModel.hasInstagramSession ? "Instagram 已连接" : "连接 Instagram")
@@ -676,6 +850,8 @@ struct ContentView: View {
                     Image(systemName: viewModel.isCurrentProfileFavorite ? "star.fill" : "star")
                         .foregroundStyle(viewModel.isCurrentProfileFavorite ? Brand.favorite : Brand.accent)
                         .frame(width: 32, height: 32)
+                        .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                        .symbolEffect(.bounce, value: viewModel.isCurrentProfileFavorite)
                 }
                 .buttonStyle(.plain)
                 .disabled(viewModel.profileUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -697,12 +873,12 @@ struct ContentView: View {
                 viewModel.fetchLatestProfilePosts()
             } label: {
                 HStack(spacing: 8) {
-                    if viewModel.isLoadingProfile {
-                        ProgressView()
-                            .tint(.white)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
+                    Image(systemName: "arrow.clockwise")
+                        .symbolEffect(
+                            .rotate,
+                            options: .repeat(.continuous),
+                            isActive: viewModel.isLoadingProfile
+                        )
 
                     Text(viewModel.isLoadingProfile ? "正在获取" : "获取主页内容")
                 }
@@ -739,11 +915,15 @@ struct ContentView: View {
                     isInputFocused = false
                     viewModel.refreshFavoriteProfiles()
                 } label: {
-                    if viewModel.isRefreshingFavoriteProfiles {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Label("检查更新", systemImage: "arrow.clockwise")
+                    Label {
+                        Text("检查更新")
+                    } icon: {
+                        Image(systemName: "arrow.clockwise")
+                            .symbolEffect(
+                                .rotate,
+                                options: .repeat(.continuous),
+                                isActive: viewModel.isRefreshingFavoriteProfiles
+                            )
                     }
                 }
                 .font(.caption.weight(.semibold))
@@ -1139,6 +1319,8 @@ private struct PreviewAssetTile: View {
                             .font(.system(size: 25, weight: .bold))
                             .foregroundStyle(isSelected ? Brand.accent : .white)
                             .shadow(radius: 3)
+                            .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                            .symbolEffect(.bounce, value: isSelected)
                     }
                     Spacer()
                     HStack {
@@ -1567,6 +1749,8 @@ private struct ProfilePostTile: View {
                                     Circle()
                                         .stroke(.white.opacity(0.88), lineWidth: 1.5)
                                 }
+                                .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                                .symbolEffect(.bounce, value: isSelected)
                         }
 
                         Spacer()
@@ -1615,7 +1799,10 @@ private struct ProfilePostTile: View {
 private struct RecentSaveRow: View {
     let save: RecentSave
     let collections: [MediaCollection]
+    let isSelectionMode: Bool
+    let isSelected: Bool
     let onSelect: () -> Void
+    let onToggleSelection: () -> Void
     let onToggleFavorite: () -> Void
     let onOpen: () -> Void
     let onCopy: () -> Void
@@ -1660,32 +1847,49 @@ private struct RecentSaveRow: View {
                 }
             }
 
-            Button(action: onToggleFavorite) {
-                Image(systemName: save.isFavorite ? "star.fill" : "star")
-                    .foregroundStyle(save.isFavorite ? Brand.favorite : Color.secondary)
-                    .frame(width: 30, height: 44)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(save.isFavorite ? "取消收藏" : "加入收藏")
-
-            Menu {
-                Button(save.isFavorite ? "取消收藏" : "加入收藏", systemImage: save.isFavorite ? "star.slash" : "star", action: onToggleFavorite)
-                Button("打开原链接", systemImage: "safari", action: onOpen)
-                Button("复制链接", systemImage: "doc.on.doc", action: onCopy)
-                Button("再次保存", systemImage: "arrow.clockwise", action: onSaveAgain)
-                Divider()
-                Button("删除记录", systemImage: "trash", role: .destructive) {
-                    isShowingDeleteConfirmation = true
+            if isSelectionMode {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(isSelected ? Brand.accent : Color.secondary)
+                    .frame(width: 36, height: 44)
+                    .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                    .symbolEffect(.bounce, value: isSelected)
+                    .accessibilityHidden(true)
+            } else {
+                Button(action: onToggleFavorite) {
+                    Image(systemName: save.isFavorite ? "star.fill" : "star")
+                        .foregroundStyle(save.isFavorite ? Brand.favorite : Color.secondary)
+                        .frame(width: 30, height: 44)
+                        .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                        .symbolEffect(.bounce, value: save.isFavorite)
                 }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .frame(width: 28, height: 44)
+                .buttonStyle(.plain)
+                .accessibilityLabel(save.isFavorite ? "取消收藏" : "加入收藏")
+
+                Menu {
+                    Button(save.isFavorite ? "取消收藏" : "加入收藏", systemImage: save.isFavorite ? "star.slash" : "star", action: onToggleFavorite)
+                    Button("打开原链接", systemImage: "safari", action: onOpen)
+                    Button("复制链接", systemImage: "doc.on.doc", action: onCopy)
+                    Button("再次保存", systemImage: "arrow.clockwise", action: onSaveAgain)
+                    Divider()
+                    Button("删除记录", systemImage: "trash", role: .destructive) {
+                        isShowingDeleteConfirmation = true
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 28, height: 44)
+                }
             }
         }
         .padding(13)
         .surfaceCard(radius: 22)
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(isSelected ? Brand.accent : Color.clear, lineWidth: 2)
+        }
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .onTapGesture(perform: onSelect)
+        .onTapGesture(perform: isSelectionMode ? onToggleSelection : onSelect)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .confirmationDialog(
             "删除这条媒体记录？",
             isPresented: $isShowingDeleteConfirmation
@@ -1740,6 +1944,7 @@ private struct RecentSaveDetailView: View {
     @State private var note: String?
     @State private var isEditingMetadata = false
     @State private var isShowingDeleteConfirmation = false
+    @State private var isShowingMediaViewer = false
 
     init(
         save: RecentSave,
@@ -1770,10 +1975,14 @@ private struct RecentSaveDetailView: View {
 
                 ScrollView {
                     VStack(spacing: 20) {
-                        RecentDetailPreview(
-                            filename: save.previewFilename,
-                            contentKind: save.contentKind
-                        )
+                        PhotoLibraryDetailPreview(
+                            assetIdentifiers: save.photoLibraryAssetIDs,
+                            fallbackFilename: save.previewFilename,
+                            contentKind: save.contentKind,
+                            tint: Brand.accent
+                        ) {
+                            isShowingMediaViewer = true
+                        }
 
                         HStack(alignment: .center, spacing: 14) {
                             VStack(alignment: .leading, spacing: 5) {
@@ -1795,6 +2004,8 @@ private struct RecentSaveDetailView: View {
                                     Image(systemName: isFavorite ? "star.fill" : "star")
                                         .font(.title3.weight(.semibold))
                                         .foregroundStyle(isFavorite ? Brand.favorite : Brand.accent)
+                                        .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                                        .symbolEffect(.bounce, value: isFavorite)
                                 }
                                 .buttonStyle(.glass)
                                 .accessibilityLabel(isFavorite ? "取消收藏" : "加入收藏")
@@ -1894,6 +2105,14 @@ private struct RecentSaveDetailView: View {
                     note = updatedNote
                     persistMetadata()
                 }
+            }
+            .fullScreenCover(isPresented: $isShowingMediaViewer) {
+                PhotoLibraryMediaViewer(
+                    assetIdentifiers: save.photoLibraryAssetIDs,
+                    fallbackFilename: save.previewFilename,
+                    contentKind: save.contentKind,
+                    tint: Brand.accent
+                )
             }
             .confirmationDialog(
                 "删除这条媒体记录？",
@@ -2256,66 +2475,6 @@ private struct CollectionManagerRow: View {
     }
 }
 
-private struct RecentDetailPreview: View {
-    let filename: String?
-    let contentKind: InstagramContentKind
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(Color.black.opacity(0.94))
-
-            if let url = RecentSaveStore.previewURL(for: filename) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case let .success(image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    case .failure, .empty:
-                        fallback
-                    @unknown default:
-                        fallback
-                    }
-                }
-            } else {
-                fallback
-            }
-
-            if filename != nil {
-                Text(contentKind.previewLabel)
-                    .font(.caption2.weight(.bold))
-                    .tracking(1.1)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 7)
-                    .background(.black.opacity(0.42), in: Capsule())
-                    .padding(14)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 360)
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(.white.opacity(0.12), lineWidth: 0.8)
-        }
-        .shadow(color: .black.opacity(0.12), radius: 24, y: 12)
-    }
-
-    private var fallback: some View {
-        ZStack {
-            Brand.mediaSurface
-            Text(contentKind.previewLabel)
-                .font(.title3.weight(.bold))
-                .tracking(2)
-                .foregroundStyle(.white.opacity(0.9))
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 private struct SaveQueueAccessoryView: View {
     let job: SaveJob
     let queueCount: Int
@@ -2329,6 +2488,8 @@ private struct SaveQueueAccessoryView: View {
                 HStack(spacing: 7) {
                     Image(systemName: job.status.accessoryIcon)
                         .foregroundStyle(job.status.tint)
+                        .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                        .symbolEffect(.bounce, value: job.status.accessoryIcon)
                     Text(job.status.title)
                         .font(.caption.weight(.semibold))
                         .lineLimit(1)
@@ -2345,6 +2506,8 @@ private struct SaveQueueAccessoryView: View {
                         Image(systemName: job.status.accessoryIcon)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(job.status.tint)
+                            .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp)))
+                            .symbolEffect(.bounce, value: job.status.accessoryIcon)
 
                         VStack(alignment: .leading, spacing: 1) {
                             Text(job.displayTitle)
@@ -2686,7 +2849,7 @@ private extension SaveJob {
     }
 }
 
-private extension InstagramContentKind {
+extension InstagramContentKind {
     var title: String {
         switch self {
         case .direct:

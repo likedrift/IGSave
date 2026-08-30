@@ -24,7 +24,7 @@ enum PhotoLibrarySaverError: LocalizedError, Sendable {
 }
 
 struct PhotoLibrarySaver: Sendable {
-    func save(fileURL: URL, kind: MediaKind, albumName: String? = nil) async throws {
+    func save(fileURL: URL, kind: MediaKind, albumName: String? = nil) async throws -> String {
         try await requestPermission(requiresLibraryAccess: albumName != nil)
 
         guard let libraryKind = libraryMediaKind(fileURL: fileURL, preferredKind: kind) else {
@@ -57,9 +57,15 @@ struct PhotoLibrarySaver: Sendable {
             }
         }
 
-        if let albumName, let identifier = identifierBox.value {
+        guard let identifier = identifierBox.value else {
+            throw PhotoLibrarySaverError.saveFailed
+        }
+
+        if let albumName {
             try? await addAsset(identifier: identifier, toAlbumNamed: albumName)
         }
+
+        return identifier
     }
 
     private enum LibraryMediaKind: Sendable {

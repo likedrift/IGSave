@@ -91,6 +91,7 @@ struct RecentSave: Identifiable, Codable, Equatable, Sendable {
     let contentKind: InstagramContentKind
     let sourceURL: String
     let previewFilename: String?
+    let photoLibraryAssetIDs: [String]
     var isFavorite: Bool
     var collectionIDs: [UUID]
     var tags: [String]
@@ -105,6 +106,7 @@ struct RecentSave: Identifiable, Codable, Equatable, Sendable {
         contentKind: InstagramContentKind,
         sourceURL: String,
         previewFilename: String?,
+        photoLibraryAssetIDs: [String] = [],
         isFavorite: Bool = false,
         collectionIDs: [UUID] = [],
         tags: [String] = [],
@@ -118,6 +120,7 @@ struct RecentSave: Identifiable, Codable, Equatable, Sendable {
         self.contentKind = contentKind
         self.sourceURL = sourceURL
         self.previewFilename = previewFilename
+        self.photoLibraryAssetIDs = photoLibraryAssetIDs
         self.isFavorite = isFavorite
         self.collectionIDs = collectionIDs
         self.tags = tags
@@ -133,6 +136,7 @@ struct RecentSave: Identifiable, Codable, Equatable, Sendable {
         case contentKind
         case sourceURL
         case previewFilename
+        case photoLibraryAssetIDs
         case isFavorite
         case collectionIDs
         case tags
@@ -149,6 +153,7 @@ struct RecentSave: Identifiable, Codable, Equatable, Sendable {
         contentKind = try container.decode(InstagramContentKind.self, forKey: .contentKind)
         sourceURL = try container.decode(String.self, forKey: .sourceURL)
         previewFilename = try container.decodeIfPresent(String.self, forKey: .previewFilename)
+        photoLibraryAssetIDs = try container.decodeIfPresent([String].self, forKey: .photoLibraryAssetIDs) ?? []
         isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
         collectionIDs = try container.decodeIfPresent([UUID].self, forKey: .collectionIDs) ?? []
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
@@ -165,6 +170,7 @@ struct RecentSave: Identifiable, Codable, Equatable, Sendable {
         try container.encode(contentKind, forKey: .contentKind)
         try container.encode(sourceURL, forKey: .sourceURL)
         try container.encodeIfPresent(previewFilename, forKey: .previewFilename)
+        try container.encode(photoLibraryAssetIDs, forKey: .photoLibraryAssetIDs)
         try container.encode(isFavorite, forKey: .isFavorite)
         try container.encode(collectionIDs, forKey: .collectionIDs)
         try container.encode(tags, forKey: .tags)
