@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var selectedTab: AppTab = .save
     @State private var inputMode: SaveInputMode = .link
     @State private var profileContentFilter: ProfileContentFilter = .post
+    @State private var profileShowsOnlyNewContent = false
     @State private var recentContentFilter: RecentContentFilter = .all
     @State private var mediaLibraryScope: MediaLibraryScope = .all
     @State private var recentSearchText = ""
@@ -37,6 +38,14 @@ struct ContentView: View {
         }
         .tint(Brand.accent)
         .tabBarMinimizeBehavior(.never)
+        .onChange(of: viewModel.profileUsername) { _, _ in
+            profileShowsOnlyNewContent = false
+        }
+        .onChange(of: profileContentFilter) { _, filter in
+            if filter == .story {
+                profileShowsOnlyNewContent = false
+            }
+        }
         .onOpenURL { url in
             if viewModel.handleIncomingURL(url) {
                 selectedTab = .save
@@ -627,42 +636,14 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(viewModel.profileUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel(viewModel.isCurrentProfileFavorite ? "取消收藏账号" : "收藏账号")
+                .accessibilityLabel(viewModel.isCurrentProfileFavorite ? "取消关注账号" : "关注账号")
             }
             .padding(.horizontal, 16)
             .frame(height: 56)
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
             if !viewModel.favoriteProfiles.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 9) {
-                        ForEach(viewModel.favoriteProfiles) { favorite in
-                            Button {
-                                isInputFocused = false
-                                viewModel.selectFavoriteProfile(favorite)
-                            } label: {
-                                Label("@\(favorite.username)", systemImage: "star.fill")
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 9)
-                                    .background(Brand.accent.opacity(0.09), in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button("移除收藏", systemImage: "star.slash", role: .destructive) {
-                                    viewModel.removeFavoriteProfile(favorite)
-                                }
-                            }
-                        }
-                    }
-                }
-                .scrollIndicators(.hidden)
-            }
-
-            if viewModel.lastProfileNewContentCount > 0 {
-                Label("相比上次新增 \(viewModel.lastProfileNewContentCount) 项内容", systemImage: "sparkles")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Brand.accent)
+                creatorWatchlist
             }
 
             if let profileError = viewModel.profileError {
@@ -697,10 +678,93 @@ struct ContentView: View {
         .transition(.opacity.combined(with: .move(edge: .trailing)))
     }
 
+    private var creatorWatchlist: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Label("关注账号", systemImage: "person.2")
+                    .font(.subheadline.weight(.semibold))
+
+                if viewModel.favoriteNewContentCount > 0 {
+                    Text("\(viewModel.favoriteNewContentCount) 项新增")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Brand.accent, in: Capsule())
+                }
+
+                Spacer()
+
+                Button {
+                    isInputFocused = false
+                    viewModel.refreshFavoriteProfiles()
+                } label: {
+                    if viewModel.isRefreshingFavoriteProfiles {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("检查更新", systemImage: "arrow.clockwise")
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(Brand.accent)
+                .disabled(viewModel.isRefreshingFavoriteProfiles || viewModel.isLoadingProfile)
+            }
+
+            if viewModel.isRefreshingFavoriteProfiles {
+                VStack(alignment: .leading, spacing: 5) {
+                    ProgressView(
+                        value: Double(viewModel.favoriteRefreshCompletedCount),
+                        total: Double(max(viewModel.favoriteRefreshTotalCount, 1))
+                    )
+                    .tint(Brand.accent)
+
+                    Text("正在检查 \(viewModel.favoriteRefreshCompletedCount)/\(viewModel.favoriteRefreshTotalCount) 个账号")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(viewModel.favoriteProfilesForDisplay) { favorite in
+                        CreatorProfileCard(
+                            profile: favorite,
+                            isSelected: favorite.username.caseInsensitiveCompare(
+                                viewModel.profileUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+                            ) == .orderedSame,
+                            onSelect: {
+                                isInputFocused = false
+                                viewModel.selectFavoriteProfile(favorite)
+                            },
+                            onMarkSeen: { viewModel.markFavoriteProfileSeen(favorite) },
+                            onRemove: { viewModel.removeFavoriteProfile(favorite) }
+                        )
+                        .disabled(viewModel.isRefreshingFavoriteProfiles)
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+
+            if let error = viewModel.favoriteRefreshError {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(Brand.danger)
+            }
+        }
+        .padding(14)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+    }
+
     @ViewBuilder
     private var profilePostsSection: some View {
         if inputMode == .profile, !viewModel.profilePosts.isEmpty {
-            let visiblePosts = profilePosts(for: profileContentFilter)
+            let postsForContentFilter = profilePosts(for: profileContentFilter)
+            let newContentIDs = viewModel.currentProfileNewContentIDs
+            let newPostsForContentFilter = postsForContentFilter.filter { newContentIDs.contains($0.id) }
+            let visiblePosts = profileShowsOnlyNewContent ? newPostsForContentFilter : postsForContentFilter
             let visibleIDs = Set(visiblePosts.map(\.id))
             let allVisibleSelected = !visibleIDs.isEmpty && visibleIDs.isSubset(of: viewModel.selectedProfilePostIDs)
 
@@ -724,6 +788,29 @@ struct ContentView: View {
                 }
                 .pickerStyle(.segmented)
 
+                if !newPostsForContentFilter.isEmpty, profileContentFilter != .story {
+                    HStack(spacing: 10) {
+                        Label("\(newPostsForContentFilter.count) 项新增", systemImage: "sparkles")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Brand.accent)
+
+                        Spacer()
+
+                        Button(profileShowsOnlyNewContent ? "显示全部" : "只看新增") {
+                            withAnimation(.snappy) {
+                                profileShowsOnlyNewContent.toggle()
+                            }
+                        }
+                        .font(.caption.weight(.semibold))
+
+                        Button("全部已读") {
+                            profileShowsOnlyNewContent = false
+                            viewModel.markCurrentProfileSeen()
+                        }
+                        .font(.caption.weight(.semibold))
+                    }
+                }
+
                 HStack {
                     Label(
                         profileContentFilter.title,
@@ -746,10 +833,10 @@ struct ContentView: View {
                             .font(.system(size: 24, weight: .medium))
                             .foregroundStyle(.tertiary)
 
-                        Text(profileContentFilter.emptyTitle)
+                        Text(profileShowsOnlyNewContent ? "本栏没有新增内容" : profileContentFilter.emptyTitle)
                             .font(.subheadline.weight(.semibold))
 
-                        Text(profileContentFilter.emptyDescription)
+                        Text(profileShowsOnlyNewContent ? "切换为“显示全部”可查看已有内容。" : profileContentFilter.emptyDescription)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -765,7 +852,8 @@ struct ContentView: View {
                         ForEach(visiblePosts) { post in
                             ProfilePostTile(
                                 post: post,
-                                isSelected: viewModel.selectedProfilePostIDs.contains(post.id)
+                                isSelected: viewModel.selectedProfilePostIDs.contains(post.id),
+                                isNew: newContentIDs.contains(post.id)
                             ) {
                                 viewModel.toggleProfilePost(post)
                             }
@@ -1306,9 +1394,78 @@ private struct AppBackdrop: View {
     }
 }
 
+private struct CreatorProfileCard: View {
+    let profile: FavoriteProfile
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onMarkSeen: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "person.crop.circle")
+                        .font(.title3)
+                        .foregroundStyle(isSelected ? Brand.accent : .secondary)
+
+                    Spacer()
+
+                    if !profile.unseenPostIDs.isEmpty {
+                        Text(profile.unseenPostIDs.count > 99 ? "99+" : "\(profile.unseenPostIDs.count)")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Brand.accent, in: Capsule())
+                    }
+                }
+
+                Text("@\(profile.username)")
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+
+                Text(lastCheckedText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: 132, alignment: .leading)
+            .padding(12)
+            .background(
+                isSelected ? Brand.accent.opacity(0.12) : Color.primary.opacity(0.04),
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(isSelected ? Brand.accent.opacity(0.48) : Color.primary.opacity(0.05), lineWidth: 0.8)
+            }
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            if !profile.unseenPostIDs.isEmpty {
+                Button("全部标为已读", systemImage: "checkmark.circle", action: onMarkSeen)
+            }
+            Button("取消关注", systemImage: "star.slash", role: .destructive, action: onRemove)
+        }
+        .accessibilityLabel("@\(profile.username)，\(profile.unseenPostIDs.count) 项新增，\(lastCheckedText)")
+    }
+
+    private var lastCheckedText: String {
+        guard let lastCheckedAt = profile.lastCheckedAt else {
+            return "尚未检查"
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.unitsStyle = .short
+        return "上次检查：\(formatter.localizedString(for: lastCheckedAt, relativeTo: Date()))"
+    }
+}
+
 private struct ProfilePostTile: View {
     let post: InstagramProfilePost
     let isSelected: Bool
+    let isNew: Bool
     let action: () -> Void
 
     var body: some View {
@@ -1353,10 +1510,10 @@ private struct ProfilePostTile: View {
 
                         Spacer()
 
-                        if isSelected {
+                        if isSelected || isNew {
                             HStack(spacing: 5) {
-                                Image(systemName: "checkmark")
-                                Text("已选择")
+                                Image(systemName: isSelected ? "checkmark" : "sparkles")
+                                Text(isSelected ? "已选择" : "新增")
                             }
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(.white)
@@ -1380,7 +1537,7 @@ private struct ProfilePostTile: View {
             .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(post.contentKind.title)，\(isSelected ? "已选择" : "未选择")")
+        .accessibilityLabel("\(post.contentKind.title)，\(isNew ? "新增，" : "")\(isSelected ? "已选择" : "未选择")")
     }
 
     private var placeholder: some View {

@@ -31,7 +31,10 @@ final class DownloadViewModel: ObservableObject {
     @Published private(set) var isLoadingProfile = false
     @Published private(set) var profileError: String?
     @Published private(set) var favoriteProfiles: [FavoriteProfile] = FavoriteProfileStore.load()
-    @Published private(set) var lastProfileNewContentCount = 0
+    @Published private(set) var isRefreshingFavoriteProfiles = false
+    @Published private(set) var favoriteRefreshCompletedCount = 0
+    @Published private(set) var favoriteRefreshTotalCount = 0
+    @Published private(set) var favoriteRefreshError: String?
 
     private let resolver = InstagramMediaResolver()
     private let webStoryResolver = InstagramWebStoryResolver()
@@ -52,7 +55,8 @@ final class DownloadViewModel: ObservableObject {
 
     var canFetchProfile: Bool {
         !profileUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            !isLoadingProfile
+            !isLoadingProfile &&
+            !isRefreshingFavoriteProfiles
     }
 
     var canSaveSelectedProfilePosts: Bool {
@@ -74,6 +78,38 @@ final class DownloadViewModel: ObservableObject {
     var isCurrentProfileFavorite: Bool {
         guard let username = normalizedProfileUsername(profileUsername) else { return false }
         return favoriteProfiles.contains { $0.username.caseInsensitiveCompare(username) == .orderedSame }
+    }
+
+    var currentProfileNewContentIDs: Set<String> {
+        guard
+            let username = normalizedProfileUsername(profileUsername),
+            let favorite = favoriteProfiles.first(where: {
+                $0.username.caseInsensitiveCompare(username) == .orderedSame
+            })
+        else {
+            return []
+        }
+        return favorite.unseenPostIDs.intersection(Set(profilePosts.map(\.id)))
+    }
+
+    var lastProfileNewContentCount: Int {
+        currentProfileNewContentIDs.count
+    }
+
+    var favoriteNewContentCount: Int {
+        favoriteProfiles.reduce(0) { $0 + $1.unseenPostIDs.count }
+    }
+
+    var favoriteProfilesForDisplay: [FavoriteProfile] {
+        favoriteProfiles.sorted { lhs, rhs in
+            if lhs.unseenPostIDs.isEmpty != rhs.unseenPostIDs.isEmpty {
+                return !lhs.unseenPostIDs.isEmpty
+            }
+            if lhs.unseenPostIDs.count != rhs.unseenPostIDs.count {
+                return lhs.unseenPostIDs.count > rhs.unseenPostIDs.count
+            }
+            return lhs.addedAt < rhs.addedAt
+        }
     }
 
     func pasteFromClipboard() {
@@ -170,7 +206,7 @@ final class DownloadViewModel: ObservableObject {
     func fetchLatestProfilePosts() {
         let username = profileUsername.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !username.isEmpty, !isLoadingProfile else {
+        guard !username.isEmpty, !isLoadingProfile, !isRefreshingFavoriteProfiles else {
             return
         }
 
@@ -204,9 +240,15 @@ final class DownloadViewModel: ObservableObject {
         }) {
             favoriteProfiles.remove(at: index)
         } else {
+            guard favoriteProfiles.count < FavoriteProfileStore.maximumCount else {
+                profileError = "最多可关注 \(FavoriteProfileStore.maximumCount) 个账号。"
+                return
+            }
+            let knownPostIDs = Set(profilePosts.filter { $0.contentKind != .story }.map(\.id))
             favoriteProfiles.append(FavoriteProfile(
                 username: username,
-                lastKnownPostIDs: Set(profilePosts.map(\.id))
+                lastKnownPostIDs: knownPostIDs,
+                lastCheckedAt: knownPostIDs.isEmpty ? nil : Date()
             ))
         }
         FavoriteProfileStore.persist(favoriteProfiles)
@@ -221,6 +263,66 @@ final class DownloadViewModel: ObservableObject {
     func removeFavoriteProfile(_ favorite: FavoriteProfile) {
         favoriteProfiles.removeAll { $0.id == favorite.id }
         FavoriteProfileStore.persist(favoriteProfiles)
+    }
+
+    func refreshFavoriteProfiles() {
+        guard !favoriteProfiles.isEmpty,
+              !isRefreshingFavoriteProfiles,
+              !isLoadingProfile else {
+            return
+        }
+
+        let profilesToRefresh = favoriteProfiles
+        isRefreshingFavoriteProfiles = true
+        favoriteRefreshCompletedCount = 0
+        favoriteRefreshTotalCount = profilesToRefresh.count
+        favoriteRefreshError = nil
+
+        Task {
+            var failedCount = 0
+            let initialNewContentCount = favoriteNewContentCount
+
+            for favorite in profilesToRefresh {
+                do {
+                    let posts = try await profileFeedResolver.latestPosts(
+                        for: favorite.username,
+                        limitPerKind: 5
+                    )
+                    _ = updateFavoriteSnapshot(for: favorite.username, posts: posts)
+                } catch {
+                    failedCount += 1
+                    let descriptor = AppErrorClassifier.classify(error)
+                    DiagnosticStore.record(operation: "profile", outcome: .failure, error: descriptor)
+                }
+                favoriteRefreshCompletedCount += 1
+            }
+
+            if failedCount > 0 {
+                favoriteRefreshError = "有 \(failedCount) 个账号暂时无法检查，请稍后重试。"
+            } else if favoriteNewContentCount > initialNewContentCount {
+                HapticFeedback.success()
+            }
+            isRefreshingFavoriteProfiles = false
+        }
+    }
+
+    func markFavoriteProfileSeen(_ favorite: FavoriteProfile) {
+        favoriteProfiles = FavoriteProfileStore.markingSeen(
+            username: favorite.username,
+            in: favoriteProfiles
+        )
+        FavoriteProfileStore.persist(favoriteProfiles)
+        HapticFeedback.selection()
+    }
+
+    func markCurrentProfileSeen() {
+        guard let username = normalizedProfileUsername(profileUsername) else { return }
+        favoriteProfiles = FavoriteProfileStore.markingSeen(
+            username: username,
+            in: favoriteProfiles
+        )
+        FavoriteProfileStore.persist(favoriteProfiles)
+        HapticFeedback.selection()
     }
 
     func toggleProfilePost(_ post: InstagramProfilePost) {
@@ -258,6 +360,15 @@ final class DownloadViewModel: ObservableObject {
         let batchID = selectedPosts.count > 1 ? UUID() : nil
         for post in selectedPosts {
             enqueue(input: post.url.absoluteString, batchID: batchID)
+        }
+
+        if let username = normalizedProfileUsername(profileUsername) {
+            favoriteProfiles = FavoriteProfileStore.markingSeen(
+                username: username,
+                postIDs: Set(selectedPosts.map(\.id)),
+                in: favoriteProfiles
+            )
+            FavoriteProfileStore.persist(favoriteProfiles)
         }
 
         selectedProfilePostIDs = []
@@ -1036,22 +1147,18 @@ final class DownloadViewModel: ObservableObject {
         return value.lowercased()
     }
 
-    private func updateFavoriteSnapshot(for rawUsername: String, posts: [InstagramProfilePost]) {
-        guard
-            let username = normalizedProfileUsername(rawUsername),
-            let index = favoriteProfiles.firstIndex(where: {
-                $0.username.caseInsensitiveCompare(username) == .orderedSame
-            })
-        else {
-            lastProfileNewContentCount = 0
-            return
-        }
-
+    @discardableResult
+    private func updateFavoriteSnapshot(for rawUsername: String, posts: [InstagramProfilePost]) -> Set<String> {
+        guard let username = normalizedProfileUsername(rawUsername) else { return [] }
         let currentIDs = Set(posts.filter { $0.contentKind != .story }.map(\.id))
-        let previousIDs = favoriteProfiles[index].lastKnownPostIDs
-        lastProfileNewContentCount = previousIDs.isEmpty ? 0 : currentIDs.subtracting(previousIDs).count
-        favoriteProfiles[index].lastKnownPostIDs = currentIDs
+        let result = FavoriteProfileStore.applyingSnapshot(
+            username: username,
+            currentPostIDs: currentIDs,
+            to: favoriteProfiles
+        )
+        favoriteProfiles = result.profiles
         FavoriteProfileStore.persist(favoriteProfiles)
+        return result.newContentIDs
     }
 }
 
