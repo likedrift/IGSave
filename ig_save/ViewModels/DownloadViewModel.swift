@@ -671,19 +671,10 @@ final class DownloadViewModel: ObservableObject {
             try Task.checkCancellation()
             let resolution: MediaResolution
             if let pendingAssets = initialJob.pendingAssets {
-                let assets = pendingAssets.compactMap(\.asset)
-                guard assets.count == pendingAssets.count else {
-                    throw SaveJobError.invalidRestoredAsset
-                }
-                let sourceURL = firstURL(in: input) ?? assets.first?.sourceURL
-                guard let sourceURL else {
-                    throw SaveJobError.invalidRestoredAsset
-                }
-                resolution = MediaResolution(
-                    assets: assets,
-                    username: initialJob.username,
-                    contentKind: initialJob.contentKind ?? .unknown,
-                    sourceURL: sourceURL
+                resolution = try await refreshedResolution(
+                    input: input,
+                    pendingAssets: pendingAssets,
+                    storedJob: initialJob
                 )
             } else if let preparedResolution = preparedResolutions.removeValue(forKey: jobID) {
                 resolution = preparedResolution
@@ -697,7 +688,10 @@ final class DownloadViewModel: ObservableObject {
             if AppPreferences.protectsAgainstDuplicates,
                !initialJob.allowsDuplicate,
                (initialJob.successfulAssetCount ?? 0) == 0,
-               let previousSave = RecentSaveStore.previousSave(for: resolution.sourceURL.absoluteString) {
+               let previousSave = RecentSaveStore.previousSave(
+                   for: resolution.sourceURL.absoluteString,
+                   in: recentSaves
+               ) {
                 update(jobID, status: .duplicate(previousSavedAt: previousSave.savedAt), attemptID: attemptID)
                 HapticFeedback.warning()
                 return
@@ -726,6 +720,65 @@ final class DownloadViewModel: ObservableObject {
             setAttemptError(jobID, attemptID: attemptID, error: descriptor)
             finalize(jobID, attemptID: attemptID, fallbackError: descriptor.displayMessage)
         }
+    }
+
+    private func refreshedResolution(
+        input: String,
+        pendingAssets: [SaveAssetDescriptor],
+        storedJob: SaveJob
+    ) async throws -> MediaResolution {
+        let storedAssets = pendingAssets.compactMap(\.asset)
+        guard storedAssets.count == pendingAssets.count else {
+            throw SaveJobError.invalidRestoredAsset
+        }
+
+        do {
+            let freshResolution = try await resolveMedia(input)
+            if let refreshedAssets = Self.assetsMatchingPendingDescriptors(
+                pendingAssets,
+                in: freshResolution.assets
+            ) {
+                return MediaResolution(
+                    assets: refreshedAssets,
+                    username: freshResolution.username ?? storedJob.username,
+                    contentKind: freshResolution.contentKind,
+                    sourceURL: freshResolution.sourceURL
+                )
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // The stored signed URLs may still be valid, so keep them as a recovery path.
+        }
+
+        let sourceURL = firstURL(in: input) ?? storedAssets.first?.sourceURL
+        guard let sourceURL else {
+            throw SaveJobError.invalidRestoredAsset
+        }
+        return MediaResolution(
+            assets: storedAssets,
+            username: storedJob.username,
+            contentKind: storedJob.contentKind ?? .unknown,
+            sourceURL: sourceURL
+        )
+    }
+
+    nonisolated static func assetsMatchingPendingDescriptors(
+        _ descriptors: [SaveAssetDescriptor],
+        in refreshedAssets: [MediaAsset]
+    ) -> [MediaAsset]? {
+        var unusedAssets = refreshedAssets
+        var matches: [MediaAsset] = []
+
+        for descriptor in descriptors {
+            guard let index = unusedAssets.firstIndex(where: {
+                $0.kind == descriptor.kind && $0.suggestedFilename == descriptor.suggestedFilename
+            }) else {
+                return nil
+            }
+            matches.append(unusedAssets.remove(at: index))
+        }
+        return matches
     }
 
     private func downloadAndSaveAssets(

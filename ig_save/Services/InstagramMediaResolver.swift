@@ -9,6 +9,7 @@ enum MediaResolverError: LocalizedError, Sendable {
     case noURL
     case unsupportedHost
     case invalidResponse
+    case httpStatus(Int)
     case noMediaFound
     case storyLoginRequired
     case storyMediaUnavailable
@@ -21,6 +22,8 @@ enum MediaResolverError: LocalizedError, Sendable {
             "目前只支持 Instagram 链接或直接图片/视频链接。"
         case .invalidResponse:
             "页面响应无效。"
+        case let .httpStatus(statusCode):
+            "Instagram 页面请求失败（HTTP \(statusCode)）。"
         case .noMediaFound:
             "没有找到可保存的媒体。请确认链接仍然有效，并且当前 Instagram 账号有查看权限。"
         case .storyLoginRequired:
@@ -32,6 +35,22 @@ enum MediaResolverError: LocalizedError, Sendable {
 }
 
 actor InstagramMediaResolver {
+    private struct HTMLDocument: Sendable {
+        let html: String
+        let finalURL: URL
+    }
+
+    private let session: URLSession
+    private let retryPolicy: NetworkRetryPolicy
+
+    init(
+        session: URLSession = .shared,
+        retryPolicy: NetworkRetryPolicy = NetworkRetryPolicy()
+    ) {
+        self.session = session
+        self.retryPolicy = retryPolicy
+    }
+
     private enum InstagramTarget: Sendable {
         case post(shortcode: String, kind: InstagramContentKind)
         case story(username: String, id: String)
@@ -103,9 +122,15 @@ actor InstagramMediaResolver {
             throw MediaResolverError.unsupportedHost
         }
 
-        let target = instagramTarget(from: url)
-        let html = try await fetchHTML(from: url)
-        let assets = extractMediaAssets(from: html, target: target)
+        let document = try await fetchHTML(from: url)
+        let resolvedURL = isInstagramURL(document.finalURL) ? document.finalURL : url
+        let target = instagramTarget(from: resolvedURL)
+        let jsonObjects = applicationJSONObjects(from: document.html)
+        let assets = extractMediaAssets(
+            from: document.html,
+            target: target,
+            jsonObjects: jsonObjects
+        )
 
         guard !assets.isEmpty else {
             throw MediaResolverError.noMediaFound
@@ -113,9 +138,9 @@ actor InstagramMediaResolver {
 
         return MediaResolution(
             assets: assets,
-            username: username(from: html, target: target),
+            username: username(from: document.html, target: target, jsonObjects: jsonObjects),
             contentKind: target.contentKind,
-            sourceURL: url
+            sourceURL: resolvedURL
         )
     }
 
@@ -163,7 +188,7 @@ actor InstagramMediaResolver {
         return .unknown
     }
 
-    private func fetchHTML(from url: URL) async throws -> String {
+    private func fetchHTML(from url: URL) async throws -> HTMLDocument {
         var request = URLRequest(url: url)
         request.timeoutInterval = 25
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
@@ -174,22 +199,54 @@ actor InstagramMediaResolver {
             request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        for attempt in 1...retryPolicy.maximumAttempts {
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw MediaResolverError.invalidResponse
+                }
 
-        guard
-            let httpResponse = response as? HTTPURLResponse,
-            (200..<300).contains(httpResponse.statusCode),
-            let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1)
-        else {
-            throw MediaResolverError.invalidResponse
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    if retryPolicy.shouldRetry(statusCode: httpResponse.statusCode, afterAttempt: attempt) {
+                        try await retryPolicy.wait(
+                            afterAttempt: attempt,
+                            retryAfter: httpResponse.value(forHTTPHeaderField: "Retry-After")
+                        )
+                        continue
+                    }
+                    throw MediaResolverError.httpStatus(httpResponse.statusCode)
+                }
+
+                guard !data.isEmpty, data.count <= 20 * 1_024 * 1_024,
+                      let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1)
+                else {
+                    throw MediaResolverError.invalidResponse
+                }
+
+                return HTMLDocument(html: html, finalURL: httpResponse.url ?? url)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError()
+            } catch {
+                if retryPolicy.shouldRetry(error: error, afterAttempt: attempt) {
+                    try await retryPolicy.wait(afterAttempt: attempt)
+                    continue
+                }
+                throw error
+            }
         }
 
-        return html
+        throw MediaResolverError.invalidResponse
     }
 
-    private func extractMediaAssets(from html: String, target: InstagramTarget) -> [MediaAsset] {
+    private func extractMediaAssets(
+        from html: String,
+        target: InstagramTarget,
+        jsonObjects: [Any]
+    ) -> [MediaAsset] {
         var resolved: [MediaCandidate] = []
-        let structuredAssets = extractStructuredJSONAssets(from: html, target: target)
+        let structuredAssets = extractStructuredJSONAssets(from: jsonObjects, target: target)
         let embeddedAssets = extractEmbeddedJSONAssets(from: html, target: target)
 
         resolved.append(contentsOf: structuredAssets)
@@ -300,9 +357,7 @@ actor InstagramMediaResolver {
         return matchingScripts.joined(separator: "\n")
     }
 
-    private func extractStructuredJSONAssets(from html: String, target: InstagramTarget) -> [MediaCandidate] {
-        let jsonObjects = applicationJSONObjects(from: html)
-
+    private func extractStructuredJSONAssets(from jsonObjects: [Any], target: InstagramTarget) -> [MediaCandidate] {
         guard !jsonObjects.isEmpty else {
             return []
         }
@@ -346,7 +401,7 @@ actor InstagramMediaResolver {
         }
     }
 
-    private func username(from html: String, target: InstagramTarget) -> String? {
+    private func username(from html: String, target: InstagramTarget, jsonObjects: [Any]) -> String? {
         if let username = target.usernameFromPath {
             return username
         }
@@ -355,7 +410,6 @@ actor InstagramMediaResolver {
             return nil
         }
 
-        let jsonObjects = applicationJSONObjects(from: html)
         let matchingNodes = jsonObjects.flatMap { findMediaNodes(matchingShortcode: shortcode, in: $0) }
 
         for node in matchingNodes {

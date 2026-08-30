@@ -4,8 +4,7 @@ enum MediaCollectionStore {
     static let maximumCount = 50
 
     static func load() -> [MediaCollection] {
-        guard let data = try? Data(contentsOf: storageURL()),
-              let collections = try? JSONDecoder().decode([MediaCollection].self, from: data) else {
+        guard let collections = DurableJSONStore.load([MediaCollection].self, from: storageURL()) else {
             return []
         }
         return Array(collections.prefix(maximumCount))
@@ -51,13 +50,7 @@ enum MediaCollectionStore {
     }
 
     private static func persist(_ collections: [MediaCollection]) {
-        guard let data = try? JSONEncoder().encode(Array(collections.prefix(maximumCount))) else { return }
-        let url = storageURL()
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: url, options: [.atomic, .completeFileProtection])
+        DurableJSONStore.persist(Array(collections.prefix(maximumCount)), to: storageURL())
     }
 
     private static func storageURL() -> URL {

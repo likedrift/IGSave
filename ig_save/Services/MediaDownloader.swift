@@ -7,16 +7,24 @@ import Foundation
 
 enum MediaDownloaderError: LocalizedError, Sendable {
     case invalidResponse
+    case httpStatus(Int)
+    case unexpectedContentType(String?)
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
             "媒体下载响应无效。"
+        case let .httpStatus(statusCode):
+            "媒体下载失败（HTTP \(statusCode)）。"
+        case .unexpectedContentType:
+            "下载地址没有返回有效的图片或视频。"
         }
     }
 }
 
 struct MediaDownloader: Sendable {
+    private let retryPolicy = NetworkRetryPolicy()
+
     func download(
         _ asset: MediaAsset,
         jobID: UUID,
@@ -32,15 +40,37 @@ struct MediaDownloader: Sendable {
             request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         }
 
-        do {
-            return try await BackgroundDownloadCoordinator.shared.download(
-                request: request,
-                identifier: Self.transferIdentifier(jobID: jobID, asset: asset),
-                fileExtension: Self.preferredFileExtension(for: asset)
-            )
-        } catch let error as URLError where error.code == .cancelled {
-            throw CancellationError()
+        for attempt in 1...retryPolicy.maximumAttempts {
+            do {
+                return try await BackgroundDownloadCoordinator.shared.download(
+                    request: request,
+                    identifier: Self.transferIdentifier(jobID: jobID, asset: asset),
+                    fileExtension: Self.preferredFileExtension(for: asset)
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError()
+            } catch let error as MediaDownloaderError {
+                let shouldRetry: Bool = switch error {
+                case .invalidResponse:
+                    attempt < retryPolicy.maximumAttempts
+                case let .httpStatus(statusCode):
+                    retryPolicy.shouldRetry(statusCode: statusCode, afterAttempt: attempt)
+                case .unexpectedContentType:
+                    false
+                }
+                guard shouldRetry else { throw error }
+                try await retryPolicy.wait(afterAttempt: attempt)
+            } catch {
+                guard retryPolicy.shouldRetry(error: error, afterAttempt: attempt) else {
+                    throw error
+                }
+                try await retryPolicy.wait(afterAttempt: attempt)
+            }
         }
+
+        throw MediaDownloaderError.invalidResponse
     }
 
     static func cleanCache(maximumAge: TimeInterval = 7 * 24 * 60 * 60, maximumBytes: Int64 = 500 * 1_024 * 1_024) {

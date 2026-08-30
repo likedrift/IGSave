@@ -4,25 +4,14 @@ enum FavoriteProfileStore {
     static let maximumCount = 30
 
     static func load() -> [FavoriteProfile] {
-        guard
-            let data = try? Data(contentsOf: storageURL()),
-            let profiles = try? JSONDecoder().decode([FavoriteProfile].self, from: data)
-        else {
+        guard let profiles = DurableJSONStore.load([FavoriteProfile].self, from: storageURL()) else {
             return []
         }
         return Array(profiles.sorted { $0.addedAt < $1.addedAt }.prefix(maximumCount))
     }
 
     static func persist(_ profiles: [FavoriteProfile]) {
-        guard let data = try? JSONEncoder().encode(Array(profiles.prefix(maximumCount))) else {
-            return
-        }
-        let url = storageURL()
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: url, options: [.atomic, .completeFileProtection])
+        DurableJSONStore.persist(Array(profiles.prefix(maximumCount)), to: storageURL())
     }
 
     static func applyingSnapshot(

@@ -28,7 +28,31 @@ enum InstagramProfileFeedError: LocalizedError, Sendable {
 
 @MainActor
 final class InstagramProfileFeedResolver: NSObject {
+    private let retryPolicy = NetworkRetryPolicy(maximumAttempts: 2, baseDelay: 0.8, maximumDelay: 2)
+
     func latestPosts(for rawUsername: String, limitPerKind: Int = 5) async throws -> [InstagramProfilePost] {
+        for attempt in 1...retryPolicy.maximumAttempts {
+            do {
+                return try await loadLatestPosts(for: rawUsername, limitPerKind: limitPerKind)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch InstagramProfileFeedError.invalidResponse {
+                guard attempt < retryPolicy.maximumAttempts else {
+                    throw InstagramProfileFeedError.invalidResponse
+                }
+                try await retryPolicy.wait(afterAttempt: attempt)
+            } catch {
+                guard retryPolicy.shouldRetry(error: error, afterAttempt: attempt) else {
+                    throw error
+                }
+                try await retryPolicy.wait(afterAttempt: attempt)
+            }
+        }
+
+        throw InstagramProfileFeedError.invalidResponse
+    }
+
+    private func loadLatestPosts(for rawUsername: String, limitPerKind: Int) async throws -> [InstagramProfilePost] {
         guard let username = normalizedUsername(from: rawUsername) else {
             throw InstagramProfileFeedError.invalidUsername
         }

@@ -21,6 +21,19 @@ struct AppDiagnosticsTests {
         #expect(descriptor.displayMessage.contains("系统设置"))
     }
 
+    @Test("HTTP 状态会区分限流、权限和失效链接")
+    func classifiesHTTPStatusErrors() {
+        let rateLimited = AppErrorClassifier.classify(MediaResolverError.httpStatus(429))
+        let forbidden = AppErrorClassifier.classify(MediaResolverError.httpStatus(403))
+        let expiredMedia = AppErrorClassifier.classify(MediaDownloaderError.httpStatus(404))
+
+        #expect(rateLimited.category == .network)
+        #expect(rateLimited.code == "resolver.http_429")
+        #expect(forbidden.category == .access)
+        #expect(expiredMedia.code == "download.http_404")
+        #expect(expiredMedia.displayMessage.contains("重新解析"))
+    }
+
     @Test("诊断文本移除链接账号会话和本机路径")
     func sanitizesPrivateValues() {
         let original = "@likedrift https://instagram.com/p/example sessionid=secret /private/var/mobile/file.mp4"

@@ -56,6 +56,19 @@ enum AppErrorClassifier {
                 return descriptor(.invalidInput, "resolver.unsupported_host", resolverError, "请改用 Instagram 帖子、Reel、快拍或媒体直链。")
             case .invalidResponse:
                 return descriptor(.network, "resolver.invalid_response", resolverError, "请稍后重试；持续失败时可重新连接 Instagram。")
+            case let .httpStatus(statusCode):
+                switch statusCode {
+                case 401:
+                    return descriptor(.authentication, "resolver.http_401", resolverError, "请重新连接 Instagram 后重试。")
+                case 403:
+                    return descriptor(.access, "resolver.http_403", resolverError, "请确认当前账号有权查看这项内容。")
+                case 404, 410:
+                    return descriptor(.unavailable, "resolver.http_\(statusCode)", resolverError, "内容可能已删除、过期或链接已失效。")
+                case 429:
+                    return descriptor(.network, "resolver.http_429", "Instagram 请求过于频繁。", "请稍后再试。")
+                default:
+                    return descriptor(.network, "resolver.http_\(statusCode)", resolverError, "请稍后重试。")
+                }
             case .noMediaFound:
                 return descriptor(.unavailable, "resolver.no_media", resolverError, "请确认内容未删除且当前账号可以查看。")
             case .storyLoginRequired:
@@ -89,8 +102,26 @@ enum AppErrorClassifier {
             }
         }
 
-        if error is MediaDownloaderError {
-            return descriptor(.network, "download.invalid_response", error, "媒体链接可能已过期，请重新解析并重试。")
+        if let downloadError = error as? MediaDownloaderError {
+            switch downloadError {
+            case .invalidResponse:
+                return descriptor(.network, "download.invalid_response", error, "媒体链接可能已过期，请重新解析并重试。")
+            case let .httpStatus(statusCode):
+                let category: AppErrorCategory = [401, 403].contains(statusCode) ? .access : .network
+                return descriptor(
+                    category,
+                    "download.http_\(statusCode)",
+                    error,
+                    statusCode == 404 ? "媒体链接已失效，请重新解析后重试。" : "请稍后重试。"
+                )
+            case .unexpectedContentType:
+                return descriptor(
+                    .unavailable,
+                    "download.unexpected_content",
+                    error,
+                    "媒体地址可能已经过期，请重试任务以重新解析。"
+                )
+            }
         }
 
         let cocoaError = error as NSError
@@ -174,8 +205,7 @@ enum DiagnosticStore {
     private static let maximumEntryCount = 100
 
     static func entries() -> [DiagnosticEntry] {
-        guard let data = try? Data(contentsOf: storageURL()),
-              let entries = try? JSONDecoder().decode([DiagnosticEntry].self, from: data) else {
+        guard let entries = DurableJSONStore.load([DiagnosticEntry].self, from: storageURL()) else {
             return []
         }
         return entries.sorted { $0.timestamp > $1.timestamp }
@@ -203,7 +233,9 @@ enum DiagnosticStore {
     }
 
     static func clear() {
-        try? FileManager.default.removeItem(at: storageURL())
+        let url = storageURL()
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: DurableJSONStore.backupURL(for: url))
     }
 
     static func report(for entries: [DiagnosticEntry]? = nil) -> String {
@@ -239,13 +271,7 @@ enum DiagnosticStore {
     }
 
     private static func persist(_ entries: [DiagnosticEntry]) {
-        guard let data = try? JSONEncoder().encode(entries) else { return }
-        let url = storageURL()
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: url, options: [.atomic, .completeFileProtection])
+        DurableJSONStore.persist(entries, to: storageURL())
     }
 
     private static func storageURL() -> URL {

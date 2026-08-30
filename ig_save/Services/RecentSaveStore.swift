@@ -10,8 +10,7 @@ enum RecentSaveStore {
     private static let maxCount = 2_000
 
     static func load() -> [RecentSave] {
-        if let data = try? Data(contentsOf: storageURL()),
-           let saves = try? JSONDecoder().decode([RecentSave].self, from: data) {
+        if let saves = DurableJSONStore.load([RecentSave].self, from: storageURL()) {
             return Array(saves.prefix(maxCount))
         }
 
@@ -45,9 +44,9 @@ enum RecentSaveStore {
         return nextSaves
     }
 
-    static func previousSave(for sourceURL: String) -> RecentSave? {
+    static func previousSave(for sourceURL: String, in saves: [RecentSave]) -> RecentSave? {
         let key = normalizedSourceURL(sourceURL)
-        return load().first { normalizedSourceURL($0.sourceURL) == key }
+        return saves.first { normalizedSourceURL($0.sourceURL) == key }
     }
 
     static func remove(_ save: RecentSave, from saves: [RecentSave]) -> [RecentSave] {
@@ -195,16 +194,7 @@ enum RecentSaveStore {
     }
 
     private static func persist(_ saves: [RecentSave]) {
-        guard let data = try? JSONEncoder().encode(saves) else {
-            return
-        }
-
-        let url = storageURL()
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: url, options: [.atomic, .completeFileProtection])
+        DurableJSONStore.persist(saves, to: storageURL())
     }
 
     private static func pruneThumbnails(keeping saves: [RecentSave]) {

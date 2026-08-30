@@ -119,4 +119,32 @@ struct SaveJobStateTests {
         #expect(job.allowsDuplicate)
         #expect(job.updatedAt == now)
     }
+
+    @Test("重新解析后只选择尚未保存的媒体并保持任务顺序")
+    func matchesRefreshedPendingAssets() throws {
+        let first = MediaAsset(
+            sourceURL: try #require(URL(string: "https://cdn.example.com/new-first.jpg")),
+            kind: .image,
+            suggestedFilename: "ig-save-1.jpg"
+        )
+        let second = MediaAsset(
+            sourceURL: try #require(URL(string: "https://cdn.example.com/new-second.jpg")),
+            kind: .image,
+            suggestedFilename: "ig-save-2.jpg"
+        )
+        let third = MediaAsset(
+            sourceURL: try #require(URL(string: "https://cdn.example.com/new-third.mp4")),
+            kind: .video,
+            suggestedFilename: "ig-save-3.mp4"
+        )
+        let descriptors = [SaveAssetDescriptor(asset: third), SaveAssetDescriptor(asset: second)]
+
+        let matches = DownloadViewModel.assetsMatchingPendingDescriptors(
+            descriptors,
+            in: [first, second, third]
+        )
+
+        #expect(matches?.map(\.suggestedFilename) == ["ig-save-3.mp4", "ig-save-2.jpg"])
+        #expect(matches?.map(\.sourceURL) == [third.sourceURL, second.sourceURL])
+    }
 }

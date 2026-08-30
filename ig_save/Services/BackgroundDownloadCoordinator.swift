@@ -162,13 +162,33 @@ extension BackgroundDownloadCoordinator: @preconcurrency URLSessionDownloadDeleg
         didFinishDownloadingTo location: URL
     ) {
         guard let identifier = Self.transferIdentifier(from: downloadTask.taskDescription),
-              let response = downloadTask.response as? HTTPURLResponse,
-              (200..<300).contains(response.statusCode) else {
+              let response = downloadTask.response as? HTTPURLResponse else {
             finish(taskIdentifier: downloadTask.taskIdentifier, result: .failure(MediaDownloaderError.invalidResponse))
             return
         }
 
+        guard (200..<300).contains(response.statusCode) else {
+            finish(
+                taskIdentifier: downloadTask.taskIdentifier,
+                result: .failure(MediaDownloaderError.httpStatus(response.statusCode))
+            )
+            return
+        }
+
+        let mimeType = response.mimeType?.lowercased()
+        if mimeType == "text/html" || mimeType == "application/json" || mimeType == "text/plain" {
+            finish(
+                taskIdentifier: downloadTask.taskIdentifier,
+                result: .failure(MediaDownloaderError.unexpectedContentType(mimeType))
+            )
+            return
+        }
+
         do {
+            let fileSize = try location.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard fileSize > 0 else {
+                throw MediaDownloaderError.invalidResponse
+            }
             let destinationURL = try Self.completedFileURL(
                 identifier: identifier,
                 fileExtension: Self.fileExtension(from: downloadTask.taskDescription)

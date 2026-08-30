@@ -8,7 +8,31 @@ import WebKit
 
 @MainActor
 final class InstagramWebStoryResolver: NSObject {
+    private let retryPolicy = NetworkRetryPolicy(maximumAttempts: 2, baseDelay: 0.8, maximumDelay: 2)
+
     func resolve(_ rawInput: String) async throws -> MediaResolution {
+        for attempt in 1...retryPolicy.maximumAttempts {
+            do {
+                return try await resolveOnce(rawInput)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch MediaResolverError.invalidResponse {
+                guard attempt < retryPolicy.maximumAttempts else {
+                    throw MediaResolverError.invalidResponse
+                }
+                try await retryPolicy.wait(afterAttempt: attempt)
+            } catch {
+                guard retryPolicy.shouldRetry(error: error, afterAttempt: attempt) else {
+                    throw error
+                }
+                try await retryPolicy.wait(afterAttempt: attempt)
+            }
+        }
+
+        throw MediaResolverError.invalidResponse
+    }
+
+    private func resolveOnce(_ rawInput: String) async throws -> MediaResolution {
         guard let url = firstURL(in: rawInput) else {
             throw MediaResolverError.noURL
         }

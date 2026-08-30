@@ -4,15 +4,14 @@ enum SaveJobStore {
     private static let maxCount = 50
 
     static func load() -> [SaveJob] {
-        guard
-            let data = try? Data(contentsOf: storageURL()),
-            let jobs = try? JSONDecoder().decode([SaveJob].self, from: data)
-        else {
+        guard let jobs = DurableJSONStore.load([SaveJob].self, from: storageURL()) else {
             return []
         }
 
         let restoredJobs = restored(jobs)
-        persist(restoredJobs)
+        if restoredJobs != jobs {
+            persist(restoredJobs)
+        }
         return restoredJobs
     }
 
@@ -33,16 +32,7 @@ enum SaveJobStore {
     }
 
     static func persist(_ jobs: [SaveJob]) {
-        guard let data = try? JSONEncoder().encode(Array(jobs.prefix(maxCount))) else {
-            return
-        }
-
-        let url = storageURL()
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: url, options: [.atomic, .completeFileProtection])
+        DurableJSONStore.persist(Array(jobs.prefix(maxCount)), to: storageURL())
     }
 
     private static func storageURL() -> URL {
