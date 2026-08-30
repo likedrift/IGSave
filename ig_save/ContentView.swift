@@ -12,7 +12,6 @@ import UIKit
 struct ContentView: View {
     @StateObject private var viewModel = DownloadViewModel()
     @State private var selectedTab: AppTab = .save
-    @State private var inputMode: SaveInputMode = .link
     @State private var profileContentFilter: ProfileContentFilter = .post
     @State private var profileShowsOnlyNewContent = false
     @State private var recentContentFilter: RecentContentFilter = .all
@@ -21,6 +20,7 @@ struct ContentView: View {
     @State private var isShowingSettings = false
     @State private var isShowingCollectionManager = false
     @State private var isShowingClearLibraryConfirmation = false
+    @State private var isShowingTaskQueue = false
     @State private var selectedRecentSave: RecentSave?
     @FocusState private var isInputFocused: Bool
     @Environment(\.openURL) private var openURL
@@ -32,12 +32,26 @@ struct ContentView: View {
                 saveNavigation
             }
 
+            Tab("关注", systemImage: "person.2", value: AppTab.following) {
+                followingNavigation
+            }
+
             Tab("媒体库", systemImage: "square.stack.3d.up", value: AppTab.recents) {
                 recentsNavigation
             }
         }
         .tint(Brand.accent)
         .tabBarMinimizeBehavior(.never)
+        .tabViewBottomAccessory {
+            if let currentJob = prioritizedJobs.first {
+                SaveQueueAccessoryView(
+                    job: currentJob,
+                    queueCount: prioritizedJobs.count
+                ) {
+                    isShowingTaskQueue = true
+                }
+            }
+        }
         .onChange(of: viewModel.profileUsername) { _, _ in
             profileShowsOnlyNewContent = false
         }
@@ -49,7 +63,6 @@ struct ContentView: View {
         .onOpenURL { url in
             if viewModel.handleIncomingURL(url) {
                 selectedTab = .save
-                inputMode = .link
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .igSavePendingImport)) { _ in
@@ -120,6 +133,9 @@ struct ContentView: View {
                 }
             )
         }
+        .sheet(isPresented: $isShowingTaskQueue) {
+            taskQueueSheet
+        }
         .sheet(item: $selectedRecentSave) { save in
             RecentSaveDetailView(
                 save: save,
@@ -159,8 +175,6 @@ struct ContentView: View {
                 ScrollView {
                     VStack(spacing: 24) {
                         linkComposer
-                        profilePostsSection
-                        taskQueueSection
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 10)
@@ -177,13 +191,54 @@ struct ContentView: View {
                         isShowingSettings = true
                     } label: {
                         Image(systemName: "gearshape")
+                            .foregroundStyle(.primary)
                     }
+                    .tint(Color.primary)
                     .accessibilityLabel("设置")
 
                     Button {
                         viewModel.showInstagramLogin()
                     } label: {
                         Image(systemName: viewModel.hasInstagramSession ? "checkmark.circle.fill" : "person.crop.circle")
+                            .foregroundStyle(viewModel.hasInstagramSession ? Brand.success : Color.primary)
+                    }
+                    .accessibilityLabel(viewModel.hasInstagramSession ? "Instagram 已登录" : "登录 Instagram")
+                }
+            }
+        }
+    }
+
+    private var followingNavigation: some View {
+        NavigationStack {
+            ZStack {
+                AppBackdrop()
+
+                ScrollView {
+                    VStack(spacing: 24) {
+                        if !viewModel.favoriteProfiles.isEmpty {
+                            creatorWatchlist
+                                .surfaceCard(radius: 26)
+                        }
+
+                        profileComposer
+                        profilePostsSection
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 10)
+                    .padding(.bottom, 36)
+                }
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+            }
+            .navigationTitle("关注")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        viewModel.showInstagramLogin()
+                    } label: {
+                        Image(systemName: viewModel.hasInstagramSession ? "checkmark.circle.fill" : "person.crop.circle")
+                            .foregroundStyle(viewModel.hasInstagramSession ? Brand.success : Color.primary)
                     }
                     .accessibilityLabel(viewModel.hasInstagramSession ? "Instagram 已登录" : "登录 Instagram")
                 }
@@ -463,25 +518,11 @@ struct ContentView: View {
 
     private var linkComposer: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Picker("保存方式", selection: $inputMode) {
-                Label("链接", systemImage: "link")
-                    .tag(SaveInputMode.link)
-                Label("账号", systemImage: "person.crop.square")
-                    .tag(SaveInputMode.profile)
-            }
-            .pickerStyle(.segmented)
-
             instagramSessionRow
-
-            if inputMode == .link {
-                linkInput
-            } else {
-                profileInput
-            }
+            linkInput
         }
         .padding(20)
         .surfaceCard(radius: 26)
-        .animation(.snappy, value: inputMode)
     }
 
     private var instagramSessionRow: some View {
@@ -601,8 +642,10 @@ struct ContentView: View {
         .transition(.opacity.combined(with: .move(edge: .leading)))
     }
 
-    private var profileInput: some View {
+    private var profileComposer: some View {
         VStack(alignment: .leading, spacing: 18) {
+            instagramSessionRow
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("指定账号")
                     .font(.headline)
@@ -642,10 +685,6 @@ struct ContentView: View {
             .frame(height: 56)
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-            if !viewModel.favoriteProfiles.isEmpty {
-                creatorWatchlist
-            }
-
             if let profileError = viewModel.profileError {
                 Label(profileError, systemImage: "exclamationmark.circle.fill")
                     .font(.caption)
@@ -675,7 +714,8 @@ struct ContentView: View {
             .tint(Brand.accent)
             .disabled(!viewModel.canFetchProfile)
         }
-        .transition(.opacity.combined(with: .move(edge: .trailing)))
+        .padding(20)
+        .surfaceCard(radius: 26)
     }
 
     private var creatorWatchlist: some View {
@@ -687,10 +727,10 @@ struct ContentView: View {
                 if viewModel.favoriteNewContentCount > 0 {
                     Text("\(viewModel.favoriteNewContentCount) 项新增")
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Brand.accent)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(Brand.accent, in: Capsule())
+                        .background(Brand.accent.opacity(0.12), in: Capsule())
                 }
 
                 Spacer()
@@ -707,8 +747,9 @@ struct ContentView: View {
                     }
                 }
                 .font(.caption.weight(.semibold))
-                .buttonStyle(.plain)
-                .foregroundStyle(Brand.accent)
+                .buttonStyle(.glassProminent)
+                .tint(Brand.accent)
+                .controlSize(.small)
                 .disabled(viewModel.isRefreshingFavoriteProfiles || viewModel.isLoadingProfile)
             }
 
@@ -754,13 +795,12 @@ struct ContentView: View {
                     .foregroundStyle(Brand.danger)
             }
         }
-        .padding(14)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+        .padding(20)
     }
 
     @ViewBuilder
     private var profilePostsSection: some View {
-        if inputMode == .profile, !viewModel.profilePosts.isEmpty {
+        if !viewModel.profilePosts.isEmpty {
             let postsForContentFilter = profilePosts(for: profileContentFilter)
             let newContentIDs = viewModel.currentProfileNewContentIDs
             let newPostsForContentFilter = postsForContentFilter.filter { newContentIDs.contains($0.id) }
@@ -894,28 +934,53 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
-    private var taskQueueSection: some View {
-        if let currentJob = prioritizedJobs.first {
-            let taskCount = prioritizedJobs.count
+    private var taskQueueSheet: some View {
+        NavigationStack {
+            ZStack {
+                AppBackdrop()
 
-            SaveQueueProgressView(
-                job: currentJob,
-                queueCount: taskCount,
-                cancelTitle: currentJob.batchID == nil ? "取消" : "取消全部",
-                onRetry: { viewModel.retry(currentJob) },
-                onForceSave: { viewModel.retry(currentJob, allowDuplicate: true) },
-                onCancel: {
-                    if currentJob.batchID == nil {
-                        viewModel.cancel(currentJob)
-                    } else {
-                        viewModel.cancelBatch(containing: currentJob)
+                if prioritizedJobs.isEmpty {
+                    ContentUnavailableView(
+                        "没有进行中的任务",
+                        systemImage: "checkmark.circle",
+                        description: Text("新的保存任务会显示在这里。")
+                    )
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 14) {
+                            ForEach(prioritizedJobs) { job in
+                                SaveQueueProgressView(
+                                    job: job,
+                                    queueCount: prioritizedJobs.count,
+                                    cancelTitle: job.batchID == nil ? "取消" : "取消全部",
+                                    onRetry: { viewModel.retry(job) },
+                                    onForceSave: { viewModel.retry(job, allowDuplicate: true) },
+                                    onCancel: {
+                                        if job.batchID == nil {
+                                            viewModel.cancel(job)
+                                        } else {
+                                            viewModel.cancelBatch(containing: job)
+                                        }
+                                    },
+                                    onRemove: { viewModel.remove(job) }
+                                )
+                            }
+                        }
+                        .padding(20)
                     }
-                },
-                onRemove: { viewModel.remove(currentJob) }
-            )
-            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .scrollIndicators(.hidden)
+                }
+            }
+            .navigationTitle("保存任务")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { isShowingTaskQueue = false }
+                }
+            }
         }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 
     private var prioritizedJobs: [SaveJob] {
@@ -1314,12 +1379,8 @@ private struct DiagnosticEntryRow: View {
 
 private enum AppTab: Hashable {
     case save
+    case following
     case recents
-}
-
-private enum SaveInputMode: Hashable {
-    case link
-    case profile
 }
 
 private enum ProfileContentFilter: Hashable {
@@ -1375,15 +1436,15 @@ private enum ProfileContentFilter: Hashable {
 private enum Brand {
     static let accent = Color(uiColor: UIColor { traits in
         if traits.userInterfaceStyle == .dark {
-            return UIColor(red: 0.40, green: 0.47, blue: 0.52, alpha: 1)
+            return UIColor(red: 0.93, green: 0.12, blue: 0.23, alpha: 1)
         }
-        return UIColor(red: 0.31, green: 0.37, blue: 0.41, alpha: 1)
+        return UIColor(red: 0.82, green: 0.05, blue: 0.16, alpha: 1)
     })
     static let mediaSurface = Color(red: 0.25, green: 0.29, blue: 0.32)
-    static let success = Color(red: 0.34, green: 0.49, blue: 0.39)
-    static let warning = Color(red: 0.62, green: 0.49, blue: 0.30)
-    static let danger = Color(red: 0.61, green: 0.31, blue: 0.33)
-    static let favorite = Color(red: 0.62, green: 0.52, blue: 0.31)
+    static let success = Color(uiColor: .systemGreen)
+    static let warning = Color(uiColor: .systemOrange)
+    static let danger = Color(uiColor: .systemRed)
+    static let favorite = Color(uiColor: .systemOrange)
 }
 
 private struct AppBackdrop: View {
@@ -2255,6 +2316,68 @@ private struct RecentDetailPreview: View {
     }
 }
 
+private struct SaveQueueAccessoryView: View {
+    let job: SaveJob
+    let queueCount: Int
+    let action: () -> Void
+
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+
+    var body: some View {
+        Button(action: action) {
+            if placement == .inline {
+                HStack(spacing: 7) {
+                    Image(systemName: job.status.accessoryIcon)
+                        .foregroundStyle(job.status.tint)
+                    Text(job.status.title)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    if queueCount > 1 {
+                        Text("+\(queueCount - 1)")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 10)
+            } else {
+                VStack(spacing: 6) {
+                    HStack(spacing: 10) {
+                        Image(systemName: job.status.accessoryIcon)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(job.status.tint)
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(job.displayTitle)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Text(queueCount > 1 ? "\(job.status.title) · 共 \(queueCount) 项" : job.status.title)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Image(systemName: "chevron.up")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    ProgressView(value: job.status.progressFraction)
+                        .progressViewStyle(.linear)
+                        .tint(job.status.tint)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("保存任务，\(job.status.title)")
+        .accessibilityHint("轻点查看全部任务")
+    }
+}
+
 private struct SaveQueueProgressView: View {
     let job: SaveJob
     let queueCount: Int
@@ -2305,7 +2428,7 @@ private struct SaveQueueProgressView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 15)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .surfaceCard(radius: 22)
     }
 
     @ViewBuilder
@@ -2424,6 +2547,27 @@ private extension View {
 }
 
 private extension SaveStatus {
+    var accessoryIcon: String {
+        switch self {
+        case .saved:
+            "checkmark.circle.fill"
+        case .partiallySaved, .duplicate:
+            "exclamationmark.circle.fill"
+        case .failed:
+            "xmark.circle.fill"
+        case .cancelled, .cancelling:
+            "stop.circle"
+        case .idle, .queued:
+            "clock"
+        case .resolving:
+            "link.badge.plus"
+        case .downloading:
+            "arrow.down.circle.fill"
+        case .saving:
+            "photo.badge.arrow.down"
+        }
+    }
+
     var tint: Color {
         switch self {
         case .saved:

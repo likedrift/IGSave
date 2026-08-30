@@ -6,12 +6,12 @@ final class ShareViewController: UIViewController {
     private static let pendingLinksKey = "pending-import-links-v1"
     private static let accentColor = UIColor { traits in
         if traits.userInterfaceStyle == .dark {
-            return UIColor(red: 0.40, green: 0.47, blue: 0.52, alpha: 1)
+            return UIColor(red: 0.93, green: 0.12, blue: 0.23, alpha: 1)
         }
-        return UIColor(red: 0.31, green: 0.37, blue: 0.41, alpha: 1)
+        return UIColor(red: 0.82, green: 0.05, blue: 0.16, alpha: 1)
     }
-    private static let successColor = UIColor(red: 0.34, green: 0.49, blue: 0.39, alpha: 1)
-    private static let dangerColor = UIColor(red: 0.61, green: 0.31, blue: 0.33, alpha: 1)
+    private static let successColor = UIColor.systemGreen
+    private static let dangerColor = UIColor.systemRed
 
     private let panelView = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
     private let iconView = UIImageView()
@@ -52,6 +52,7 @@ final class ShareViewController: UIViewController {
         closeButton.setTitle("关闭", for: .normal)
         closeButton.configuration = .tinted()
         closeButton.configuration?.cornerStyle = .capsule
+        closeButton.tintColor = Self.dangerColor
         closeButton.addTarget(self, action: #selector(close), for: .touchUpInside)
         closeButton.isHidden = true
 
